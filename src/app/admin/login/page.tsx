@@ -1,0 +1,20 @@
+import type { Metadata } from "next";
+import Image from "next/image";
+import { LoginForm } from "./login-form";
+
+export const metadata: Metadata = { title: "Committee Login", robots: { index: false } };
+
+export default function LoginPage() {
+  return (
+    <main className="bg-party flex min-h-screen items-center justify-center bg-gradient-to-br from-pink-50 via-white to-amber-50 px-4">
+      <div className="w-full max-w-sm space-y-6 rounded-3xl border bg-card p-8 shadow-lg">
+        <div className="space-y-2 text-center">
+          <Image src="/assets/logo/party-police.svg" alt="" width={56} height={56} className="mx-auto" priority />
+          <h1 className="text-2xl font-bold">Party Committee HQ</h1>
+          <p className="text-sm text-muted-foreground">Authorised personnel only. Party defaulters, turn back now. 🚨</p>
+        </div>
+        <LoginForm />
+      </div>
+    </main>
+  );
+}

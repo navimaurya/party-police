@@ -1,0 +1,46 @@
+import { toDateTimeLocal } from "@/lib/format";
+import type { EventCategory, EventStatus, EventType } from "@/types";
+
+/**
+ * Shape of the party form, plus the helper that builds it from an event.
+ * Kept out of event-form.tsx ("use client") so Server Components can call it.
+ */
+export type EventFormValue = {
+  _id?: string;
+  title: string;
+  eventType: EventType;
+  category: EventCategory;
+  organizerName: string;
+  organizerEmail?: string | null;
+  occasion?: string;
+  description?: string;
+  location?: string;
+  eventDate?: string;
+  participants: { name: string; email?: string | null }[];
+  budget?: number | null;
+  currency?: string;
+  status: EventStatus;
+  publicVisibility: boolean;
+  notificationPreferences?: { reminders?: boolean; announcement?: boolean; updates?: boolean; thankYou?: boolean; includeBillLinks?: boolean } | null;
+};
+
+export function toFormValue(e: Partial<Omit<EventFormValue, "participants">> & { eventDate?: string; participants?: { name: string; email?: string | null }[] }): EventFormValue {
+  return {
+    _id: e._id,
+    title: e.title ?? "",
+    eventType: e.eventType ?? "scheduled",
+    category: e.category ?? "monthly",
+    organizerName: e.organizerName ?? "",
+    organizerEmail: e.organizerEmail ?? "",
+    occasion: e.occasion ?? "",
+    description: e.description ?? "",
+    location: e.location ?? "",
+    eventDate: e.eventDate ? toDateTimeLocal(e.eventDate) : "",
+    participants: e.participants ?? [],
+    budget: e.budget ?? null,
+    currency: e.currency ?? "INR",
+    status: e.status ?? "upcoming",
+    publicVisibility: e.publicVisibility ?? true,
+    notificationPreferences: e.notificationPreferences,
+  };
+}
