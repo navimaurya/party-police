@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { NativeSelect } from "@/components/admin/native-select";
+import { ParticipantPicker, type Participant } from "@/components/admin/participant-picker";
 import { api, ApiClientError, toastError } from "@/lib/api-client";
 import { formatMoney } from "@/lib/format";
 import type { EventFormValue } from "@/components/admin/event-form-value";
@@ -34,17 +35,6 @@ const PREF_LABELS = {
   includeBillLinks: "Include bill links in thank-you",
 } as const;
 
-function parseParticipants(text: string) {
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const m = /^(.*?)[\s,<]+([^\s<>,]+@[^\s<>,]+)>?$/.exec(line);
-      return m ? { name: m[1].trim() || m[2], email: m[2] } : { name: line };
-    });
-}
-
 export type MemberOption = { name: string; email: string; role?: string };
 
 export function EventForm({
@@ -61,9 +51,7 @@ export function EventForm({
   const router = useRouter();
   const isEdit = !!initial._id;
   const [v, setV] = useState<EventFormValue>(initial);
-  const [participantsText, setParticipantsText] = useState(
-    initial.participants.map((p) => (p.email ? `${p.name} <${p.email}>` : p.name)).join("\n")
-  );
+  const [participants, setParticipants] = useState<Participant[]>(initial.participants);
   const [pending, setPending] = useState(false);
   const [override, setOverride] = useState<{ open: boolean; message: string; reason: string }>({ open: false, message: "", reason: "" });
   const prefs = { reminders: true, announcement: true, updates: true, thankYou: true, includeBillLinks: true, ...(v.notificationPreferences ?? {}) };
@@ -97,7 +85,7 @@ export function EventForm({
       occasion: v.occasion ?? "",
       description: v.description ?? "",
       location: v.location ?? "",
-      participants: parseParticipants(participantsText),
+      participants: participants.map((p) => ({ name: p.name, email: p.email || "" })),
       budget: v.budget ?? null,
       currency: v.currency || "INR",
       status: v.status,
@@ -218,9 +206,8 @@ export function EventForm({
           <Textarea id="description" rows={3} maxLength={5000} value={v.description ?? ""} onChange={(e) => set("description", e.target.value)} placeholder="Menu, dress code, threats…" />
         </div>
         <div className="space-y-1.5 sm:col-span-2">
-          <Label htmlFor="participants">Participants (one per line: <code>Name</code> or <code>Name &lt;email&gt;</code>)</Label>
-          <Textarea id="participants" rows={4} value={participantsText} onChange={(e) => setParticipantsText(e.target.value)} placeholder={"Priya <priya@example.com>\nArjun"} />
-          <p className="text-xs text-muted-foreground">Emails are never shown publicly. Participants with emails receive notifications if enabled in settings.</p>
+          <Label htmlFor="participants">Participants</Label>
+          <ParticipantPicker id="participants" users={members} value={participants} onChange={setParticipants} />
         </div>
       </div>
 
