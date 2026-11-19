@@ -1,9 +1,10 @@
-import { toDateTimeLocal } from "@/lib/format";
+import { dayKey } from "@/lib/time";
 import type { EventCategory, EventStatus, EventType } from "@/types";
 
 /**
  * Shape of the party form, plus the helper that builds it from an event.
- * Kept out of event-form.tsx ("use client") so Server Components can call it.
+ * Kept out of event-form.tsx ("use client") so Server Components can call it (server only:
+ * the party day is computed in APP_TIMEZONE).
  */
 export type EventFormValue = {
   _id?: string;
@@ -15,6 +16,7 @@ export type EventFormValue = {
   occasion?: string;
   description?: string;
   location?: string;
+  /** Party day, "yyyy-MM-dd" (parties have no time). */
   eventDate?: string;
   participants: { name: string; email?: string | null }[];
   budget?: number | null;
@@ -35,7 +37,7 @@ export function toFormValue(e: Partial<Omit<EventFormValue, "participants">> & {
     occasion: e.occasion ?? "",
     description: e.description ?? "",
     location: e.location ?? "",
-    eventDate: e.eventDate ? toDateTimeLocal(e.eventDate) : "",
+    eventDate: e.eventDate ? dayKey(e.eventDate) : "",
     participants: e.participants ?? [],
     budget: e.budget ?? null,
     currency: e.currency ?? "INR",

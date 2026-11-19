@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/admin/page-header";
 import { ChangePasswordForm, ProfileForm } from "@/components/admin/profile-forms";
 import { RoleBadge, UserAvatar } from "@/components/admin/user-badges";
-import { requireAdminPage } from "@/lib/auth";
+import { requireUserPage } from "@/lib/auth";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { serialize } from "@/lib/utils-server";
 import { getUser } from "@/services/user.service";
@@ -11,7 +11,7 @@ import { getUser } from "@/services/user.service";
 export const metadata: Metadata = { title: "My profile" };
 
 export default async function ProfilePage() {
-  const admin = await requireAdminPage();
+  const admin = await requireUserPage();
   const user = serialize(await getUser(admin.id));
   return (
     <div className="space-y-6">

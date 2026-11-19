@@ -1,5 +1,6 @@
 import { env } from "@/config/env";
 import { formatInZone } from "@/lib/time";
+import type { UserRole } from "@/types";
 
 export function escapeHtml(s: unknown): string {
   return String(s ?? "")
@@ -30,8 +31,12 @@ const C = {
 const HEADING_FONT = "'Fredoka','Arial Rounded MT Bold','Trebuchet MS',Arial,sans-serif";
 const BODY_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
-/** All dates in emails are shown in the team's timezone (APP_TIMEZONE), not the server's. */
-const fmtDate = (d: Date | string) => formatInZone(d, "EEE, d MMM yyyy 'at' h:mm a");
+/**
+ * All dates in emails are shown in the team's timezone (APP_TIMEZONE), not the server's.
+ * Parties are scheduled by day, so party dates have no time.
+ */
+const fmtDate = (d: Date | string) => formatInZone(d, "EEE, d MMM yyyy");
+const fmtDateTime = (d: Date | string) => formatInZone(d, "EEE, d MMM yyyy 'at' h:mm a");
 const fmtDay = (d: Date | string) => formatInZone(d, "d MMM yyyy");
 
 type Layout = {
@@ -220,13 +225,23 @@ export function instantAnnouncementEmail(e: EventLike): Rendered {
   return { subject, html, text };
 }
 
-export function eventUpdateEmail(e: EventLike): Rendered {
-  const subject = `📝 Party update: ${e.title}`;
+/** What changed since participants were last told (date and/or party giver). */
+export type EventChanges = { previousDate?: Date | string | null; previousGiver?: string | null };
+
+export function eventUpdateEmail(e: EventLike, changes: EventChanges = {}): Rendered {
+  const dateChanged = !!changes.previousDate;
+  const giverChanged = !!changes.previousGiver;
+  const what = dateChanged && giverChanged ? "new date and party giver" : dateChanged ? "a new date" : giverChanged ? "a new party giver" : "new details";
+  const subject = dateChanged ? `📅 Party moved: ${e.title} is now on ${fmtDay(e.eventDate)}` : `📝 Party update: ${e.title}`;
+  const changeLines: string[] = [];
+  if (dateChanged) changeLines.push(`📅 Date: ${fmtDate(changes.previousDate!)} → ${fmtDate(e.eventDate)}`);
+  if (giverChanged) changeLines.push(`👤 Party giver: ${changes.previousGiver} → ${e.organizerName}`);
   const html = layout({
     eyebrow: "Party update",
-    title: `${e.title} has new details`,
+    title: `${e.title} has ${what}`,
     body:
-      p("Heads up! The Party Committee has updated the details of an upcoming party.") +
+      p("Heads up! The Party Committee has updated an upcoming party.") +
+      (changeLines.length ? callout(changeLines.map(escapeHtml).join("<br>")) : "") +
       details([
         ["🎉 Party", e.title],
         ["👤 Host", e.organizerName],
@@ -235,7 +250,30 @@ export function eventUpdateEmail(e: EventLike): Rendered {
       ]),
     cta: { label: "See latest details", url: eventUrl(e) },
   });
-  const text = `${subject}\nHost: ${e.organizerName}\nWhen: ${fmtDate(e.eventDate)}\nWhere: ${e.location || "-"}\n\n${eventUrl(e)}${textSignoff()}`;
+  const text = [subject, ...changeLines, `Host: ${e.organizerName}`, `When: ${fmtDate(e.eventDate)}`, `Where: ${e.location || "-"}`, "", eventUrl(e)].join("\n") + textSignoff();
+  return { subject, html, text };
+}
+
+/** A minute after a party is added, to its participants. */
+export function eventScheduledEmail(e: EventLike): Rendered {
+  const subject = `🎉 New party: ${e.title} on ${fmtDay(e.eventDate)}`;
+  const html = layout({
+    eyebrow: "Party scheduled",
+    title: `${e.organizerName} is giving a party! 🎉`,
+    preheader: `${e.title} · ${fmtDate(e.eventDate)}`,
+    body:
+      p(`Mark your calendar! ${strong(e.organizerName)} is hosting ${strong(e.title)} and you're on the guest list.`) +
+      details([
+        ["📅 When", fmtDate(e.eventDate)],
+        ["📍 Where", e.location],
+        ["🎉 Occasion", e.occasion],
+        ["👤 Hosted by", e.organizerName],
+      ]) +
+      (e.description ? p(escapeHtml(e.description)) : "") +
+      p("Attendance is mandatory. Excuses are not accepted. 🍕"),
+    cta: { label: "View party details", url: eventUrl(e) },
+  });
+  const text = [subject, "", `${e.organizerName} is hosting ${e.title}.`, `When: ${fmtDate(e.eventDate)}`, `Where: ${e.location || "-"}`, "", eventUrl(e)].join("\n") + textSignoff();
   return { subject, html, text };
 }
 
@@ -368,7 +406,7 @@ export function giverThanksEmail(e: EventLike, subject: string, approvedAt: Date
       details([
         ["🎉 Party", e.title],
         ["📅 Date", fmtDate(e.eventDate)],
-        ["✅ Approved", fmtDate(approvedAt)],
+        ["✅ Approved", fmtDateTime(approvedAt)],
       ]) +
       p("Until the next promotion... 😉"),
     cta: { label: "See the party page", url: eventUrl(e) },
@@ -388,9 +426,25 @@ export function giverThanksEmail(e: EventLike, subject: string, approvedAt: Date
 
 /* ------------------------------ user emails ------------------------------ */
 
-type UserLike = { name: string; email: string; role: "super_admin" | "admin" | "member"; department?: string | null; designation?: string | null };
+type UserLike = { name: string; email: string; role: UserRole; department?: string | null; designation?: string | null };
 
-const ROLE_NAME = { super_admin: "Super Admin", admin: "Admin (Party Officer)", member: "Member" } as const;
+const ROLE_NAME: Record<UserRole, string> = {
+  super_admin: "Super Admin",
+  admin: "Admin (Party Officer)",
+  manager: "Manager (Party Planner)",
+  member: "Member",
+};
+
+/** What each role can do, in one line (role upgrade + credentials emails). */
+const ROLE_POWERS: Record<UserRole, string> = {
+  super_admin: "You run the whole show.",
+  admin: "You can manage users, approve parties and run Party HQ.",
+  manager: "You can schedule and modify everyone's parties.",
+  member: "You can add the parties you are giving and ask for approval once they're done.",
+};
+
+const signInUrl = () => `${appUrl()}/admin/login`;
+const firstName = (name: string) => name.trim().split(/\s+/)[0] || name;
 
 /** Bullet list styled like the website's cards. */
 const bullets = (items: [string, string][]) =>
@@ -404,9 +458,9 @@ const bullets = (items: [string, string][]) =>
 /** Sent when a user is added. Never contains a password. */
 export function welcomeEmail(u: UserLike): Rendered {
   const first = u.name.trim().split(/\s+/)[0] || u.name;
-  const isAdmin = u.role !== "member";
+  const isAdmin = u.role === "admin" || u.role === "super_admin";
   const subject = `🚨 Welcome to the Party Police, ${first}! (There is no leaving)`;
-  const signInUrl = `${appUrl()}/admin/login`;
+  const loginUrl = signInUrl();
   const html = layout({
     eyebrow: "New recruit 🎉",
     title: `Welcome to the Party Police, ${first}!`,
@@ -431,9 +485,11 @@ export function welcomeEmail(u: UserLike): Rendered {
         ? callout(
             `You're also a <strong>Party Officer</strong> 🫡. You can sign in to Party HQ and approve parties. Use this email address and the password the Super Admin shared with you. With great power comes great snack responsibility.`
           )
-        : "") +
+        : u.role === "manager"
+          ? callout("You're also a <strong>Manager</strong> 🗓️. You can sign in to Party HQ and schedule or modify everyone's parties.")
+          : "") +
       p("Welcome aboard. Bring an appetite. Excuses are not accepted. 🍽️"),
-    cta: isAdmin ? { label: "Sign in to Party HQ", url: signInUrl } : { label: "See upcoming parties", url: `${appUrl()}/parties` },
+    cta: isAdmin ? { label: "Sign in to Party HQ", url: loginUrl } : { label: "See upcoming parties", url: `${appUrl()}/parties` },
   });
   const text = [
     `Hi ${first},`,
@@ -447,11 +503,70 @@ export function welcomeEmail(u: UserLike): Rendered {
     "🍕 Free food may contain traces of team bonding.",
     "",
     `Rank: ${ROLE_NAME[u.role]}`,
-    ...(isAdmin ? ["", `You're also a Party Officer: sign in at ${signInUrl} with this email and the password the Super Admin shared with you.`] : ["", `Upcoming parties: ${appUrl()}/parties`]),
+    ...(isAdmin ? ["", `You're also a Party Officer: sign in at ${loginUrl} with this email and the password the Super Admin shared with you.`] : ["", `Upcoming parties: ${appUrl()}/parties`]),
     "",
     "Welcome aboard. Bring an appetite. Excuses are not accepted. 🍽️",
     textSignoff(),
   ].join("\n");
+  return { subject, html, text };
+}
+
+/**
+ * Username + one-time password. Sent separately from the welcome email.
+ * The password is generated by the worker right before sending and is never stored in plain text.
+ */
+export function credentialsEmail(u: UserLike, password: string): Rendered {
+  const first = firstName(u.name);
+  const subject = "🔑 Your Party Police login details";
+  const html = layout({
+    eyebrow: "Login details",
+    title: `Here's how you sign in, ${first}`,
+    preheader: "Your username and a one-time password for Party HQ.",
+    body:
+      p(`Hi ${escapeHtml(first)},`) +
+      p("You can now sign in to <strong>Party HQ</strong>. Here are your login details:") +
+      details([
+        ["👤 Username", u.email],
+        ["🔑 One-time password", password],
+        ["🎖️ Role", ROLE_NAME[u.role]],
+      ]) +
+      callout("This password works for <strong>one sign-in only</strong>. Right after you sign in you'll be asked to choose your own password before you can use anything else.") +
+      p(escapeHtml(ROLE_POWERS[u.role])) +
+      p("Didn't expect this email? You can safely ignore it."),
+    cta: { label: "Sign in to Party HQ", url: signInUrl() },
+    signoff: "Party Police HQ 🚨",
+  });
+  const text = [
+    `Hi ${first},`,
+    "",
+    "You can now sign in to Party HQ.",
+    `Username: ${u.email}`,
+    `One-time password: ${password}`,
+    "",
+    "This password works for one sign-in only. You'll be asked to choose your own password right after signing in.",
+    "",
+    `Sign in: ${signInUrl()}`,
+    textSignoff("Party Police HQ 🚨"),
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/** Sent only when a user's role goes UP (never on a demotion). */
+export function roleUpgradeEmail(u: UserLike, from: UserRole): Rendered {
+  const first = firstName(u.name);
+  const subject = `🎖️ You've been promoted to ${ROLE_NAME[u.role]}!`;
+  const html = layout({
+    eyebrow: "Promotion 🎖️",
+    title: `Congratulations, ${first}! You're now ${ROLE_NAME[u.role]}`,
+    preheader: ROLE_POWERS[u.role],
+    body:
+      p(`Hi ${escapeHtml(first)},`) +
+      p(`Your Party Police rank was upgraded from ${strong(ROLE_NAME[from])} to ${strong(ROLE_NAME[u.role])}. 🎉`) +
+      callout(escapeHtml(ROLE_POWERS[u.role])) +
+      p("And yes: a promotion means you owe everyone a party. We don't make the rules. 😉"),
+    cta: { label: "Open Party HQ", url: signInUrl() },
+  });
+  const text = [`Hi ${first},`, "", `You're now ${ROLE_NAME[u.role]} (was ${ROLE_NAME[from]}).`, ROLE_POWERS[u.role], "", signInUrl(), textSignoff()].join("\n");
   return { subject, html, text };
 }
 

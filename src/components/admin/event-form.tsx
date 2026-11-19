@@ -20,8 +20,11 @@ import {
   EVENT_CATEGORIES,
   OCCASIONAL_OCCASIONS,
   SPECIAL_OCCASIONS,
+  isAdminRole,
+  isPartyManager,
   type EventCategory,
   type EventStatus,
+  type UserRole,
 } from "@/types";
 
 
@@ -29,27 +32,35 @@ type BudgetRule = { category: EventCategory; minimumBudget?: number | null; maxi
 
 const PREF_LABELS = {
   reminders: "Upcoming reminders",
-  announcement: "Instant announcement",
-  updates: "Update & cancellation emails",
+  announcement: "Announcement email (instant parties, or 1 min after a party is added)",
+  updates: "Emails when the date or party giver changes, and on cancellation",
   thankYou: "Thank-you email after completion",
   includeBillLinks: "Include bill links in thank-you",
 } as const;
 
 export type MemberOption = { name: string; email: string; role?: string };
+/** The signed-in user. Members can only add/edit parties they give; only admins approve. */
+export type EventFormViewer = { email: string; name: string; role: UserRole };
 
 export function EventForm({
   initial,
   budgetRules,
   validationEnabled,
   members = [],
+  viewer,
 }: {
   initial: EventFormValue;
   budgetRules: BudgetRule[];
   validationEnabled: boolean;
   members?: MemberOption[];
+  viewer?: EventFormViewer;
 }) {
   const router = useRouter();
   const isEdit = !!initial._id;
+  // Without a viewer (older callers) the form behaves as for an admin; the server enforces the rules anyway.
+  const canPickGiver = !viewer || isPartyManager(viewer.role);
+  const canApprove = !viewer || isAdminRole(viewer.role);
+  const locked = isEdit && initial.status === "completed" && !canApprove;
   const [v, setV] = useState<EventFormValue>(initial);
   const [participants, setParticipants] = useState<Participant[]>(initial.participants);
   const [pending, setPending] = useState(false);
@@ -93,8 +104,10 @@ export function EventForm({
       notificationPreferences: prefs,
       ...(budgetOverride ? { budgetOverride } : {}),
     };
-    // Only send the date when it changed, so a no-op edit can't trigger an "updated" email.
-    if (v.eventDate && (!isEdit || v.eventDate !== initial.eventDate)) payload.eventDate = new Date(v.eventDate).toISOString();
+    // Parties are scheduled by day: "yyyy-MM-dd" is sent as is and placed in the team's timezone by the server.
+    // Only send it when it changed, so a no-op edit can't trigger an "updated" email.
+    if (v.eventDate && (!isEdit || v.eventDate !== initial.eventDate)) payload.eventDate = v.eventDate;
+    if (!canPickGiver) payload.organizerEmail = viewer!.email;
     try {
       const saved = await api<{ _id: string }>(isEdit ? `/api/events/${initial._id}` : "/api/events", {
         method: isEdit ? "PATCH" : "POST",
@@ -157,11 +170,15 @@ export function EventForm({
         {members.length > 0 && (
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="giver">Party giver (who&apos;s paying 💸)</Label>
-            <NativeSelect id="giver" value={giver?.email ?? ""} onChange={(e) => pickGiver(e.target.value)}>
+            <NativeSelect id="giver" value={giver?.email ?? ""} disabled={!canPickGiver} onChange={(e) => pickGiver(e.target.value)}>
               <option value="">— Not a user (type the name below) —</option>
               {members.map((m) => <option key={m.email} value={m.email}>{m.name} · {m.email}{m.role && m.role !== "Member" ? ` (${m.role})` : ""}</option>)}
             </NativeSelect>
-            <p className="text-xs text-muted-foreground">On the party day at 9 AM the giver gets their own email, and the Super Admin is asked to confirm in the same thread.</p>
+            <p className="text-xs text-muted-foreground">
+              {canPickGiver
+                ? "On the party day at 9 AM the giver gets their own email, and the Super Admin is asked to confirm in the same thread."
+                : "You can only add parties you are giving. Once it's done, ask for approval from the party page."}
+            </p>
           </div>
         )}
         <div className="space-y-1.5">
@@ -170,11 +187,11 @@ export function EventForm({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="organizerEmail">Organizer email (for the party-day and thank-you emails)</Label>
-          <Input id="organizerEmail" type="email" value={v.organizerEmail ?? ""} onChange={(e) => set("organizerEmail", e.target.value)} />
+          <Input id="organizerEmail" type="email" disabled={!canPickGiver} value={v.organizerEmail ?? ""} onChange={(e) => set("organizerEmail", e.target.value)} />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="date">{v.eventType === "instant" ? "When (defaults to now)" : "Date & time *"}</Label>
-          <Input id="date" type="datetime-local" required={v.eventType === "scheduled"} value={v.eventDate ?? ""} onChange={(e) => set("eventDate", e.target.value)} />
+          <Label htmlFor="date">{v.eventType === "instant" ? "Date (defaults to today)" : "Date *"}</Label>
+          <Input id="date" type="date" required={v.eventType === "scheduled"} value={v.eventDate ?? ""} onChange={(e) => set("eventDate", e.target.value)} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="location">Venue / location</Label>
@@ -197,7 +214,7 @@ export function EventForm({
           <Label htmlFor="status">Status</Label>
           <NativeSelect id="status" value={v.status} onChange={(e) => set("status", e.target.value as EventStatus)}>
             <option value="upcoming">Upcoming</option>
-            {(!isEdit || initial.status === "completed") && <option value="completed">Completed (approved: party was given)</option>}
+            {((!isEdit && canApprove) || initial.status === "completed") && <option value="completed">Completed (approved: party was given)</option>}
             <option value="cancelled">Cancelled</option>
           </NativeSelect>
         </div>
@@ -225,8 +242,9 @@ export function EventForm({
         ))}
       </fieldset>
 
+      {locked && <p className="text-sm text-muted-foreground">This party is approved, so it can no longer be changed.</p>}
       <div className="flex gap-2">
-        <Button type="submit" size="lg" disabled={pending}>
+        <Button type="submit" size="lg" disabled={pending || locked}>
           {pending && <Loader2 className="animate-spin" />} {isEdit ? "Save changes" : v.eventType === "instant" ? "🚨 Announce now" : "Schedule party"}
         </Button>
         <Button type="button" variant="outline" size="lg" onClick={() => router.back()}>Cancel</Button>

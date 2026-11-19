@@ -14,6 +14,12 @@ export function formatDateTime(d: Date | string | null | undefined) {
   return format(new Date(d), "EEE, d MMM yyyy · h:mm a");
 }
 
+/** Party dates: parties are scheduled by day, so no time is shown. */
+export function formatPartyDate(d: Date | string | null | undefined) {
+  if (!d) return "—";
+  return format(new Date(d), "EEE, d MMM yyyy");
+}
+
 export function formatDate(d: Date | string | null | undefined) {
   if (!d) return "—";
   return format(new Date(d), "d MMM yyyy");

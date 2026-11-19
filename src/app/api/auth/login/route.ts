@@ -13,5 +13,5 @@ export const POST = route(async (req) => {
     userAgent: (await headers()).get("user-agent") ?? "",
   });
   (await cookies()).set(SESSION_COOKIE, result.token, sessionCookieOptions(result.expiresAt));
-  return ok({ admin: result.admin });
+  return ok({ admin: result.admin, user: result.user });
 });

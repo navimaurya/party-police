@@ -29,6 +29,9 @@ const PartyEventSchema = new Schema(
     approvedAt: { type: Date, default: null },
     approvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     approvedByEmail: { type: String, default: "" },
+    /** The party giver (or a manager) said the party was given and asked for approval. */
+    approvalRequestedAt: { type: Date, default: null },
+    approvalRequestedByEmail: { type: String, default: "" },
     /** Email thread used for the party-day confirmation (giver, Super Admin, thanks). */
     confirmationThread: {
       dayKey: { type: String, default: "" },
@@ -56,6 +59,7 @@ PartyEventSchema.index({ category: 1, eventDate: -1 });
 PartyEventSchema.index({ eventType: 1, status: 1, createdAt: -1 });
 PartyEventSchema.index({ publicVisibility: 1, status: 1, eventDate: 1 });
 PartyEventSchema.index({ organizerName: 1 });
+PartyEventSchema.index({ organizerEmail: 1, eventDate: -1 });
 
 export type PartyEventDoc = InferSchemaType<typeof PartyEventSchema>;
 export const PartyEvent: Model<PartyEventDoc> =

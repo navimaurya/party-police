@@ -3,8 +3,8 @@ import { connectDB } from "@/lib/mongodb";
 import { LoginAttempt, Session, User } from "@/models";
 import { env } from "@/config/env";
 import { randomToken, sha256 } from "@/lib/crypto";
-import { tooManyRequests, unauthorized } from "@/lib/errors";
-import type { AdminRole } from "@/types";
+import { AppError, tooManyRequests, unauthorized } from "@/lib/errors";
+import { USER_ROLES, type AdminRole, type UserRole } from "@/types";
 import { audit } from "./audit.service";
 
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -12,8 +12,8 @@ export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_MAX_ATTEMPTS = 5;
 const BCRYPT_ROUNDS = 12;
 
-/** Roles that may sign in to the admin panel. */
-export const SIGN_IN_ROLES: AdminRole[] = ["super_admin", "admin"];
+/** Every role may sign in (with a password); what they can do depends on the role. */
+export const SIGN_IN_ROLES: UserRole[] = [...USER_ROLES];
 
 // Used to equalise timing when the email does not exist.
 let dummyHash: Promise<string> | null = null;
@@ -127,12 +127,23 @@ export async function login(input: { email: string; password: string; ip: string
   await checkLoginRateLimit(`email:${email}`);
   await bootstrapAdminIfEmpty();
 
-  // Only active admins can sign in; members have no password.
+  // Any active user with a password can sign in. Users without one haven't received their credentials yet.
   const user = await User.findOne({ email, role: { $in: SIGN_IN_ROLES }, isActive: true }).select("+passwordHash").lean();
   const valid = await verifyPassword(input.password, user?.passwordHash);
   if (!user || !user.passwordHash || !valid) {
     await audit({ action: "auth.login_failed", entityType: "User", reason: email });
     throw unauthorized("Invalid email or password");
+  }
+  // A password issued by someone else is valid for exactly one sign-in.
+  if (user.mustChangePassword) {
+    const claimed = await User.updateOne(
+      { _id: user._id, mustChangePassword: true, tempPasswordUsedAt: null },
+      { $set: { tempPasswordUsedAt: new Date() } }
+    );
+    if (!claimed.modifiedCount) {
+      await audit({ action: "auth.login_failed", entityType: "User", entityId: String(user._id), reason: "One-time password already used" });
+      throw new AppError(401, "TEMP_PASSWORD_USED", "This one-time password was already used. Ask the Super Admin for a new one.");
+    }
   }
 
   await clearLoginRateLimit(`email:${email}`);
@@ -146,14 +157,25 @@ export async function login(input: { email: string; password: string; ip: string
   });
   await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
   await audit({ action: "auth.login", entityType: "User", entityId: String(user._id), actorId: String(user._id) });
-  return { token, expiresAt, admin: { id: String(user._id), email: user.email, name: user.name, role: user.role as AdminRole } };
+  const identity = { id: String(user._id), email: user.email, name: user.name, role: user.role as UserRole, mustChangePassword: !!user.mustChangePassword };
+  return { token, expiresAt, admin: identity, user: identity };
 }
 
+/** The signed-in user (any role). */
+export type SessionUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  sessionId: string;
+  /** Signed in with a one-time password: may only change the password. */
+  mustChangePassword: boolean;
+};
 /** The signed-in admin (Super Admin or admin). */
-export type AdminIdentity = { id: string; email: string; name: string; role: AdminRole; sessionId: string };
+export type AdminIdentity = SessionUser & { role: AdminRole };
 
 /** Server-side session validation. Only the SHA-256 of the token is stored. */
-export async function validateSessionToken(token: string | undefined | null): Promise<AdminIdentity | null> {
+export async function validateSessionToken(token: string | undefined | null): Promise<SessionUser | null> {
   if (!token || token.length < 20 || token.length > 200) return null;
   await connectDB();
   const session = await Session.findOne({ tokenHash: sha256(token) }).lean();
@@ -162,10 +184,17 @@ export async function validateSessionToken(token: string | undefined | null): Pr
     await Session.deleteOne({ _id: session._id });
     return null;
   }
-  // Re-checked on every request: a demoted or deactivated admin loses access immediately.
+  // Re-checked on every request: a demoted or deactivated user loses access immediately.
   const user = await User.findOne({ _id: session.userId, role: { $in: SIGN_IN_ROLES }, isActive: true }).lean();
   if (!user) return null;
-  return { id: String(user._id), email: user.email, name: user.name, role: user.role as AdminRole, sessionId: String(session._id) };
+  return {
+    id: String(user._id),
+    email: user.email,
+    name: user.name,
+    role: user.role as UserRole,
+    sessionId: String(session._id),
+    mustChangePassword: !!user.mustChangePassword,
+  };
 }
 
 export async function logout(token: string | undefined | null) {

@@ -40,7 +40,7 @@ describe("users: one collection for everyone", () => {
     await expect(User.create({ email: "y@team.test", name: "Y", role: "super_admin" })).rejects.toMatchObject({ code: 11000 });
   });
 
-  it("members can't sign in; admins can", async () => {
+  it("users without a password can't sign in yet; admins can", async () => {
     const sup = await superAdmin();
     await createUser(create({ email: "m@team.test", name: "M" }), sup);
     await expect(login({ email: "m@team.test", password: "anything-at-all", ip: "3.3.3.1" })).rejects.toMatchObject({ status: 401 });
@@ -83,17 +83,18 @@ describe("users: protection rules", () => {
     await expect(deleteUser(String(member._id), admin)).resolves.toBeUndefined();
   });
 
-  it("demoting or deactivating an admin signs them out and removes the password", async () => {
+  it("demoting or deactivating an admin signs them out; as a member they can still sign in", async () => {
     const sup = await superAdmin();
     const admin = await adminActor(sup);
     const { token } = await login({ email: "admin@team.test", password: "admin-pass-123", ip: "3.3.3.3" });
     await updateUser(admin.id, upd({ isActive: false }), sup);
     expect(await validateSessionToken(token)).toBeNull();
     await updateUser(admin.id, upd({ isActive: true, role: "member" }), sup);
-    expect((await User.findById(admin.id).select("+passwordHash").lean())?.passwordHash).toBeNull();
-    // Promoting again needs a new password.
-    await expect(updateUser(admin.id, upd({ role: "admin" }), sup)).rejects.toMatchObject({ status: 400 });
-    await updateUser(admin.id, upd({ role: "admin", password: "brand-new-pass-1" }), sup);
+    // Members sign in too now, so the password is kept.
+    expect((await User.findById(admin.id).select("+passwordHash").lean())?.passwordHash).toBeTruthy();
+    // Promoting again doesn't need a password; the Super Admin can still set a one-time one.
+    await expect(updateUser(admin.id, upd({ role: "admin" }), sup)).resolves.toMatchObject({ role: "admin" });
+    await updateUser(admin.id, upd({ password: "brand-new-pass-1" }), sup);
     await expect(login({ email: "admin@team.test", password: "brand-new-pass-1", ip: "3.3.3.4" })).resolves.toBeTruthy();
   });
 

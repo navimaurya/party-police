@@ -20,8 +20,9 @@ import { atLocalHour, dayKey, localDayRange } from "@/lib/time";
 import { getSettings, isNotificationTypeEnabled, type Settings } from "./settings.service";
 import { audit } from "./audit.service";
 import { activeUserEmails } from "./user.service";
-import { superAdminEmails } from "./auth.service";
-import type { NotificationType } from "@/types";
+import { hashPassword, revokeSessions, superAdminEmails } from "./auth.service";
+import { randomToken } from "@/lib/crypto";
+import type { NotificationType, UserRole } from "@/types";
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
 
@@ -29,7 +30,24 @@ export const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toStri
 export const WELCOME_DEDUPE_MS = 30 * 60 * 1000;
 
 type Job = ScheduledJobDoc & { _id: Types.ObjectId };
-type Built = { skip: string } | { to: string[]; cc?: string[]; thread?: OutgoingEmail["thread"]; rendered: T.Rendered };
+type Built =
+  | { skip: string }
+  | {
+      to: string[];
+      cc?: string[];
+      thread?: OutgoingEmail["thread"];
+      rendered: T.Rendered;
+      /**
+       * Runs only once the delivery slot is ours, right before sending, and returns the final
+       * message. Used for side effects that must not happen for a duplicate (e.g. issuing a password).
+       */
+      finalize?: () => Promise<T.Rendered>;
+    };
+
+/** Readable one-time password: 14 random URL-safe characters. */
+export function generateOneTimePassword() {
+  return randomToken(12).replace(/[-_]/g, "x").slice(0, 14);
+}
 
 function uniqueEmails(list: (string | null | undefined)[]) {
   return [...new Set(list.filter((e): e is string => !!e && /.+@.+\..+/.test(e)).map((e) => e.toLowerCase()))];
@@ -41,6 +59,16 @@ async function eventRecipients(settings: Settings, event: { participants?: { ema
     ? [...(event.participants ?? []).map((p) => p.email), event.organizerEmail]
     : [];
   return uniqueEmails([...(await activeUserEmails()), ...(settings.recipients ?? []), ...extra]);
+}
+
+/**
+ * People a party's "added" / "changed" emails go to: its participants and the party giver.
+ * A party without a participant list is for everyone, so it falls back to all recipients.
+ */
+async function participantRecipients(settings: Settings, event: { participants?: { email?: string | null }[]; organizerEmail?: string | null }) {
+  const participants = uniqueEmails((event.participants ?? []).map((p) => p.email));
+  if (!participants.length) return eventRecipients(settings, event);
+  return uniqueEmails([...participants, event.organizerEmail]);
 }
 
 /* Party-day confirmation thread: giver notice (root) -> approval request -> thanks after approval. */
@@ -93,10 +121,29 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
         if (event.status !== "upcoming") return { skip: "Instant party is no longer live" };
         if (prefs.announcement === false) return { skip: "Announcement disabled for this event" };
         return { to: await to(), rendered: T.instantAnnouncementEmail(event) };
-      case "event_update":
+      case "event_scheduled":
+        if (event.status !== "upcoming") return { skip: "Event is not upcoming" };
+        if (prefs.announcement === false) return { skip: "Announcement disabled for this event" };
+        return { to: await participantRecipients(settings, event), rendered: T.eventScheduledEmail(event) };
+      case "event_update": {
         if (event.status !== "upcoming") return { skip: "Event is not upcoming" };
         if (prefs.updates === false) return { skip: "Updates disabled for this event" };
-        return { to: await to(), rendered: T.eventUpdateEmail(event) };
+        const pl = (job.payload ?? {}) as { previousDay?: string; previousDate?: string; previousGiver?: string; previousGiverEmail?: string };
+        // Older jobs have no payload: send as before.
+        const hasBaseline = pl.previousDay !== undefined || pl.previousGiver !== undefined;
+        const dateChanged = hasBaseline && !!pl.previousDay && pl.previousDay !== dayKey(event.eventDate);
+        const giverChanged =
+          hasBaseline &&
+          ((pl.previousGiverEmail ?? "").toLowerCase() !== (event.organizerEmail ?? "").toLowerCase() || (pl.previousGiver ?? "") !== event.organizerName);
+        if (hasBaseline && !dateChanged && !giverChanged) return { skip: "The date and party giver are back to what participants were told" };
+        return {
+          to: await participantRecipients(settings, event),
+          rendered: T.eventUpdateEmail(event, {
+            previousDate: dateChanged ? pl.previousDate : null,
+            previousGiver: giverChanged ? pl.previousGiver : null,
+          }),
+        };
+      }
       case "event_cancelled":
         if (event.status !== "cancelled") return { skip: "Event is no longer cancelled" };
         return { to: await to(), rendered: T.eventCancelledEmail(event) };
@@ -106,7 +153,11 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
       case "party_approval_request": {
         const day = String(job.payload?.dayKey ?? "");
         if (event.status !== "upcoming") return { skip: `Party is ${event.status}` };
-        if (dayKey(event.eventDate) !== day) return { skip: "Party date changed; it is no longer on this day" };
+        // Asked for by the giver after the party: valid as long as the party day has come.
+        const requested = job.jobType === "party_approval_request" && job.payload?.requested === true;
+        if (requested ? dayKey(event.eventDate) > dayKey(new Date()) : dayKey(event.eventDate) !== day) {
+          return { skip: "Party date changed; it is no longer on this day" };
+        }
         const subject = event.confirmationThread?.subject || T.confirmationThreadSubject(event);
         const eventId = String(event._id);
         if (job.jobType === "party_day") {
@@ -162,6 +213,44 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
       if (days <= 0) return { skip: "Not overdue anymore" };
       return { to: uniqueEmails([...(settings.recipients ?? []), c.personEmail]), rendered: T.overdueNoticeEmail(c, days) };
     }
+  }
+  if (job.jobType === "user_credentials" && job.userId) {
+    const user = await User.findById(job.userId).select("+passwordHash").lean();
+    if (!user) return { skip: "User no longer exists" };
+    if (!user.isActive) return { skip: "User is inactive" };
+    const mode = String(job.payload?.mode ?? "onboarding");
+    // Onboarding / bulk only for users who can't sign in yet; "reset" is an explicit Super Admin request.
+    if (mode !== "reset" && user.passwordHash) return { skip: "User already has a password" };
+    const recent = await NotificationLog.exists({
+      notificationType: "user_credentials",
+      userId: user._id,
+      status: "sent",
+      sentAt: { $gte: new Date(Date.now() - WELCOME_DEDUPE_MS) },
+      idempotencyKey: { $ne: job.idempotencyKey },
+    });
+    if (recent && mode !== "reset") return { skip: "Login details were just sent to this user" };
+    const target = { ...user, role: user.role as UserRole };
+    return {
+      to: [user.email],
+      rendered: T.credentialsEmail(target, "••••••••"),
+      finalize: async () => {
+        // Issued at send time and stored only as a hash. A retry issues a fresh one.
+        const password = generateOneTimePassword();
+        await User.updateOne(
+          { _id: user._id },
+          { $set: { passwordHash: await hashPassword(password), mustChangePassword: true, tempPasswordUsedAt: null } }
+        );
+        await revokeSessions(user._id);
+        return T.credentialsEmail(target, password);
+      },
+    };
+  }
+  if (job.jobType === "user_role_upgrade" && job.userId) {
+    const user = await User.findById(job.userId).lean();
+    if (!user) return { skip: "User no longer exists" };
+    if (!user.isActive) return { skip: "User is inactive" };
+    if (user.role !== job.payload?.role) return { skip: "The role changed again before the email went out" };
+    return { to: [user.email], rendered: T.roleUpgradeEmail({ ...user, role: user.role as UserRole }, String(job.payload?.from ?? "member") as UserRole) };
   }
   if (job.jobType === "user_welcome" && job.userId) {
     const user = await User.findById(job.userId).lean();
@@ -287,7 +376,8 @@ export async function processJob(job: Job, workerId = WORKER_ID) {
   }
 
   try {
-    const res = await sendEmail({ ...built.rendered, to: built.to, cc: built.cc, thread: built.thread, idempotencyKey: job.idempotencyKey });
+    const rendered = built.finalize ? await built.finalize() : built.rendered;
+    const res = await sendEmail({ ...rendered, to: built.to, cc: built.cc, thread: built.thread, idempotencyKey: job.idempotencyKey });
     await NotificationLog.updateOne(
       { idempotencyKey: job.idempotencyKey },
       {

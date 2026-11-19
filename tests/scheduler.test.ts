@@ -182,8 +182,21 @@ describe("other notifications", () => {
     await createEvent(CreateEventSchema.parse(baseEvent({ eventType: "instant", eventDate: undefined })), actor);
     expect(await ScheduledJob.countDocuments({ jobType: "instant_announcement" })).toBe(1);
     const e = await createEvent(CreateEventSchema.parse(baseEvent()), actor);
-    await updateEvent(String(e._id), { location: "Rooftop" }, actor);
-    await updateEvent(String(e._id), { location: "Basement" }, actor);
+    // Pretend the "new party" email already went out, so changes now get their own update email.
+    await ScheduledJob.updateMany({ jobType: "event_scheduled" }, { $set: { status: "completed" } });
+    const day = 24 * 3600 * 1000;
+    await updateEvent(String(e._id), { eventDate: new Date(Date.now() + 5 * day) }, actor);
+    await updateEvent(String(e._id), { eventDate: new Date(Date.now() + 6 * day) }, actor);
+    expect(await ScheduledJob.countDocuments({ jobType: "event_update" })).toBe(1);
+  });
+
+  it("only a date or party-giver change notifies participants", async () => {
+    const actor = await makeAdmin();
+    const e = await createEvent(CreateEventSchema.parse(baseEvent()), actor);
+    await ScheduledJob.updateMany({ jobType: "event_scheduled" }, { $set: { status: "completed" } });
+    await updateEvent(String(e._id), { location: "Rooftop", title: "Renamed", description: "New menu" }, actor);
+    expect(await ScheduledJob.countDocuments({ jobType: "event_update" })).toBe(0);
+    await updateEvent(String(e._id), { organizerName: "Priya", organizerEmail: "priya@team.test" }, actor);
     expect(await ScheduledJob.countDocuments({ jobType: "event_update" })).toBe(1);
   });
 

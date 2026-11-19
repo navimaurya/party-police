@@ -8,7 +8,7 @@ import { CategoryBadge, InstantBadge, StatusBadge } from "@/components/shared/ba
 import { Countdown } from "@/components/shared/countdown";
 import { DiscountCard } from "@/components/shared/discount-card";
 import { AppError } from "@/lib/errors";
-import { formatBytes, formatDateTime, formatMoney } from "@/lib/format";
+import { formatBytes, formatMoney, formatPartyDate } from "@/lib/format";
 import { serialize } from "@/lib/utils-server";
 import { getEvent } from "@/services/event.service";
 import { listBills } from "@/services/bill.service";
@@ -60,7 +60,7 @@ async function PartyDetail({ params }: { params: PageProps<"/parties/[id]">["par
         {event.occasion && <p className="mt-1 text-lg text-muted-foreground">{event.occasion}</p>}
         <div className="mt-6 grid gap-3 text-sm sm:grid-cols-2">
           <p className="flex items-center gap-2"><User className="size-4 text-primary" /> Hosted by <strong>{event.organizerName}</strong></p>
-          <p className="flex items-center gap-2"><CalendarDays className="size-4 text-primary" /> {formatDateTime(event.eventDate)}</p>
+          <p className="flex items-center gap-2"><CalendarDays className="size-4 text-primary" /> {formatPartyDate(event.eventDate)}</p>
           {event.location && <p className="flex items-center gap-2"><MapPin className="size-4 text-primary" /> {event.location}</p>}
           {event.budget != null && <p className="flex items-center gap-2"><Wallet className="size-4 text-primary" /> Budget: {formatMoney(event.budget, event.currency)}</p>}
         </div>

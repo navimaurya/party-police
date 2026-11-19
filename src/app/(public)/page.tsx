@@ -12,7 +12,7 @@ import { Section, SectionSkeleton } from "@/components/shared/section";
 import { ShameCard } from "@/components/shared/shame-card";
 import { CategoryBadge } from "@/components/shared/badges";
 import { EventCard } from "@/components/events/event-card";
-import { formatDateTime, formatDate } from "@/lib/format";
+import { formatDate, formatPartyDate } from "@/lib/format";
 import { EMPTY_STATES, randomQuote } from "@/lib/humor";
 import { serialize } from "@/lib/utils-server";
 import { getHomepageEvents } from "@/services/event.service";
@@ -100,7 +100,7 @@ async function HomeEvents() {
                 <CategoryBadge category={nextUp.category} />
                 <h3 className="text-2xl font-bold">{nextUp.title}</h3>
                 <p className="text-muted-foreground">
-                  Hosted by <strong className="text-foreground">{nextUp.organizerName}</strong> · {formatDateTime(nextUp.eventDate)}
+                  Hosted by <strong className="text-foreground">{nextUp.organizerName}</strong> · {formatPartyDate(nextUp.eventDate)}
                   {nextUp.location ? ` · 📍 ${nextUp.location}` : ""}
                 </p>
                 <LinkButton href={`/parties/${nextUp._id}`} variant="outline" size="sm">Party details</LinkButton>

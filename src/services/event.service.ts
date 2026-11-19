@@ -2,7 +2,7 @@ import type { z } from "zod";
 import { Types } from "mongoose";
 import { connectDB } from "@/lib/mongodb";
 import { User, PartyBill, PartyCommitment, PartyEvent, ScheduledJob, type PartyEventDoc } from "@/models";
-import { badRequest, conflict, notFound } from "@/lib/errors";
+import { badRequest, conflict, forbidden, notFound } from "@/lib/errors";
 import { assertObjectId, escapeRegex } from "@/lib/utils-server";
 import { cancelPendingJobs, enqueueJob } from "@/lib/scheduler";
 import { deleteEventStorage, deleteStoredFile } from "@/lib/storage";
@@ -10,13 +10,32 @@ import { env } from "@/config/env";
 import { mongoSort, parseSort, TEXT_COLLATION } from "@/lib/sort";
 import { EVENT_DEFAULT_SORT, EVENT_SORT_FIELDS } from "@/lib/sort-fields";
 import type { CreateEventSchema, EventListQuerySchema, UpdateEventSchema } from "@/lib/validation";
-import type { EventStatus } from "@/types";
+import { atLocalHour, dayKey } from "@/lib/time";
+import { isAdminRole, isPartyManager, type EventStatus, type UserRole } from "@/types";
 import { enforceBudget } from "./budget.service";
 import { audit } from "./audit.service";
 import { giverThanksKey } from "./notification.service";
 
-export const EVENT_UPDATE_DEBOUNCE_MS = 2 * 60 * 1000;
-const NOTIFY_FIELDS = ["title", "eventDate", "location", "organizerName", "occasion", "description"] as const;
+/**
+ * "Party added" and "party changed" emails wait this long, so edits made right after
+ * (fixing a typo in the date, swapping the giver) end up in ONE email with the final state.
+ */
+export const EVENT_NOTIFY_DELAY_MS = 60 * 1000;
+export const EVENT_UPDATE_DEBOUNCE_MS = EVENT_NOTIFY_DELAY_MS;
+
+/** Parties are scheduled by day. A date-only party is stored at this local hour (APP_TIMEZONE). */
+export const PARTY_DAY_HOUR = 12;
+
+/** "yyyy-MM-dd" -> that day at PARTY_DAY_HOUR in APP_TIMEZONE. Full timestamps are kept as given. */
+export function resolveEventDate(v: string | Date | undefined): Date | undefined {
+  if (v === undefined) return undefined;
+  return typeof v === "string" ? atLocalHour(v, PARTY_DAY_HOUR) : v;
+}
+
+/** The signed-in user creating or editing a party. Omitted for system/internal calls. */
+export type EventActor = { id: string; email: string; name: string; role: UserRole };
+
+export const eventScheduledKey = (eventId: string) => `event_scheduled:${eventId}`;
 
 type CreateInput = z.infer<typeof CreateEventSchema>;
 type UpdateInput = z.infer<typeof UpdateEventSchema>;
@@ -28,10 +47,12 @@ export function thankYouKey(eventId: string, version: number) {
   return `thank_you:${eventId}:v${version}`;
 }
 
-export async function listEvents(query: ListQuery, opts: { admin: boolean }) {
+export async function listEvents(query: ListQuery, opts: { admin: boolean; organizerEmail?: string }) {
   await connectDB();
   const filter: Record<string, unknown> = {};
   if (!opts.admin) filter.publicVisibility = true;
+  // "My parties": only the ones this person is giving.
+  if (opts.organizerEmail) filter.organizerEmail = opts.organizerEmail.toLowerCase();
   if (query.category) filter.category = query.category;
   if (query.status) filter.status = query.status;
   if (query.eventType) filter.eventType = query.eventType;
@@ -67,12 +88,15 @@ export async function getEvent(id: string, opts: { admin: boolean }) {
   return event;
 }
 
-export async function getCalendarEvents(from: Date, to: Date, opts: { admin: boolean }) {
+export async function getCalendarEvents(from: Date, to: Date, opts: { admin: boolean; viewerEmail?: string }) {
   await connectDB();
   if (to <= from) throw badRequest("`to` must be after `from`");
   if (to.getTime() - from.getTime() > 100 * 24 * 3600 * 1000) throw badRequest("Range too large (max 100 days)");
   const filter: Record<string, unknown> = { eventDate: { $gte: from, $lte: to } };
-  if (!opts.admin) filter.publicVisibility = true;
+  // Signed-in members also see their own private parties.
+  if (!opts.admin) {
+    filter.$or = opts.viewerEmail ? [{ publicVisibility: true }, { organizerEmail: opts.viewerEmail.toLowerCase() }] : [{ publicVisibility: true }];
+  }
   return PartyEvent.find(filter)
     .sort({ eventDate: 1 })
     .limit(500)
@@ -80,10 +104,28 @@ export async function getCalendarEvents(from: Date, to: Date, opts: { admin: boo
     .lean();
 }
 
-export async function createEvent(input: CreateInput, actorId: string) {
+/**
+ * Who may add what:
+ * - members add only parties THEY are giving, and can't mark them approved;
+ * - managers add parties for anyone, but approving stays with admins;
+ * - budget overrides are for admins.
+ */
+function assertCanCreate(data: Omit<CreateInput, "budgetOverride">, hasOverride: boolean, actor: EventActor) {
+  if (!isPartyManager(actor.role)) {
+    const own = actor.email.toLowerCase();
+    if (data.organizerEmail && data.organizerEmail !== own) throw forbidden("You can only add parties you are giving");
+    data.organizerEmail = own;
+    data.organizerName = data.organizerName || actor.name;
+  }
+  if (data.status === "completed" && !isAdminRole(actor.role)) throw forbidden("Only an admin can approve a party");
+  if (hasOverride && !isAdminRole(actor.role)) throw forbidden("Only an admin can override the budget");
+}
+
+export async function createEvent(input: CreateInput, actorId: string, actor?: EventActor) {
   await connectDB();
-  const { budgetOverride, ...data } = input;
-  const eventDate = data.eventDate ?? new Date();
+  const { budgetOverride, eventDate: rawDate, ...data } = input;
+  if (actor) assertCanCreate(data, !!budgetOverride, actor);
+  const eventDate = resolveEventDate(rawDate) ?? new Date();
   const _id = new Types.ObjectId();
   const { overridden } = await enforceBudget({
     category: data.category,
@@ -124,16 +166,44 @@ export async function createEvent(input: CreateInput, actorId: string) {
       eventId: _id,
     });
   }
+  // Scheduled party: tell its participants a minute from now. Edits made within that minute
+  // don't send their own email; this one renders the latest state when it goes out.
+  if (event.eventType === "scheduled" && event.status === "upcoming" && event.notificationPreferences?.announcement) {
+    await enqueueJob({
+      jobType: "event_scheduled",
+      idempotencyKey: eventScheduledKey(String(_id)),
+      scheduledAt: new Date(now.getTime() + EVENT_NOTIFY_DELAY_MS),
+      eventId: _id,
+    });
+  }
   if (isCompleted) await onCompleted(event, actorId);
   return event;
 }
 
-export async function updateEvent(id: string, input: UpdateInput, actorId: string) {
+/** Members edit only their own, not-yet-approved parties; approving / un-approving is for admins. */
+function assertCanEdit(before: EventLean, rest: Omit<UpdateInput, "budgetOverride" | "notificationPreferences">, hasOverride: boolean, actor: EventActor) {
+  const admin = isAdminRole(actor.role);
+  if (!isPartyManager(actor.role)) {
+    const own = actor.email.toLowerCase();
+    if ((before.organizerEmail ?? "").toLowerCase() !== own) throw forbidden("You can only change parties you are giving");
+    if (before.status === "completed") throw forbidden("This party is already approved");
+    if (rest.organizerEmail !== undefined && rest.organizerEmail !== own) throw forbidden("You can't hand your party to someone else");
+  }
+  const nextStatus = rest.status ?? before.status;
+  if (!admin && nextStatus !== before.status && (nextStatus === "completed" || before.status === "completed")) {
+    throw forbidden("Only an admin can approve a party or undo an approval");
+  }
+  if (hasOverride && !admin) throw forbidden("Only an admin can override the budget");
+}
+
+export async function updateEvent(id: string, input: UpdateInput, actorId: string, actor?: EventActor) {
   await connectDB();
   const _id = assertObjectId(id, "event id");
   const before = await PartyEvent.findById(_id).lean();
   if (!before) throw notFound("Party not found");
-  const { budgetOverride, notificationPreferences, ...rest } = input;
+  const { budgetOverride, notificationPreferences, eventDate: rawDate, ...rest } = input;
+  if (actor) assertCanEdit(before, rest, !!budgetOverride, actor);
+  const nextDate = resolveEventDate(rawDate);
 
   const nextCategory = rest.category ?? before.category;
   const nextBudget = rest.budget !== undefined ? rest.budget : before.budget;
@@ -152,6 +222,7 @@ export async function updateEvent(id: string, input: UpdateInput, actorId: strin
   }
 
   const $set: Record<string, unknown> = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+  if (nextDate) $set.eventDate = nextDate;
   if (notificationPreferences) {
     for (const [k, v] of Object.entries(notificationPreferences)) {
       if (v !== undefined) $set[`notificationPreferences.${k}`] = v;
@@ -197,21 +268,32 @@ export async function updateEvent(id: string, input: UpdateInput, actorId: strin
 
   await applyStatusSideEffects(before, after, actorId);
 
-  const detailsChanged = NOTIFY_FIELDS.some((f) => {
-    if (rest[f] === undefined) return false;
-    const a = before[f] instanceof Date ? (before[f] as Date).getTime() : before[f];
-    const b = rest[f] instanceof Date ? (rest[f] as Date).getTime() : rest[f];
-    return a !== b;
-  });
-  if (detailsChanged && after.status === "upcoming" && after.notificationPreferences?.updates) {
-    // Debounce: one pending update email per event; it renders the latest state when sent.
-    const pending = await ScheduledJob.exists({ eventId: _id, jobType: "event_update", status: "pending" });
+  // Participants hear about a change only when the party DAY or the party GIVER changed.
+  const dateChanged = !!nextDate && dayKey(nextDate) !== dayKey(before.eventDate);
+  const giverChanged =
+    (rest.organizerEmail !== undefined && (rest.organizerEmail ?? "") !== (before.organizerEmail ?? "")) ||
+    (rest.organizerName !== undefined && rest.organizerName !== before.organizerName);
+  if ((dateChanged || giverChanged) && after.status === "upcoming" && after.notificationPreferences?.updates) {
+    // Debounce: while the "party added" email or an update email is still waiting, it will
+    // render the latest state, so no second email is queued for the same party.
+    const pending = await ScheduledJob.exists({
+      eventId: _id,
+      jobType: { $in: ["event_scheduled", "instant_announcement", "event_update"] },
+      status: "pending",
+    });
     if (!pending) {
       await enqueueJob({
         jobType: "event_update",
         idempotencyKey: `event_update:${id}:r${after.revision}`,
         scheduledAt: new Date(Date.now() + EVENT_UPDATE_DEBOUNCE_MS),
         eventId: _id,
+        // What participants were last told; if a later edit undoes the change, nothing is sent.
+        payload: {
+          previousDay: dayKey(before.eventDate),
+          previousDate: new Date(before.eventDate).toISOString(),
+          previousGiver: before.organizerName,
+          previousGiverEmail: before.organizerEmail ?? "",
+        },
       });
     }
   }
@@ -231,11 +313,13 @@ async function applyStatusSideEffects(before: EventLean, after: EventLean, actor
     await cancelPendingJobs({ eventId: after._id, jobTypes: ["thank_you", "party_giver_thanks"] });
   }
   if (after.status === "cancelled") {
+    // Cancelled before anyone was told about it: don't announce the cancellation either.
+    const unannounced = await ScheduledJob.exists({ eventId: after._id, jobType: "event_scheduled", status: "pending" });
     await cancelPendingJobs({
       eventId: after._id,
-      jobTypes: ["upcoming_reminder", "event_update", "instant_announcement", "party_day", "party_giver_notice", "party_approval_request"],
+      jobTypes: ["upcoming_reminder", "event_update", "event_scheduled", "instant_announcement", "party_day", "party_giver_notice", "party_approval_request"],
     });
-    if (after.notificationPreferences?.updates) {
+    if (after.notificationPreferences?.updates && !unannounced) {
       await enqueueJob({
         jobType: "event_cancelled",
         idempotencyKey: `event_cancelled:${String(after._id)}:r${after.revision}`,
@@ -249,7 +333,7 @@ async function applyStatusSideEffects(before: EventLean, after: EventLean, actor
 async function onCompleted(event: EventLean, actorId: string) {
   await cancelPendingJobs({
     eventId: event._id,
-    jobTypes: ["upcoming_reminder", "event_update", "party_day", "party_giver_notice", "party_approval_request"],
+    jobTypes: ["upcoming_reminder", "event_update", "event_scheduled", "party_day", "party_giver_notice", "party_approval_request"],
   });
   // Thanks from the team to the party giver, in the party-day confirmation thread.
   if (event.organizerEmail) {
@@ -284,8 +368,41 @@ async function onCompleted(event: EventLean, actorId: string) {
   }
 }
 
-export async function setEventStatus(id: string, status: EventStatus, actorId: string) {
-  return updateEvent(id, { status }, actorId);
+export async function setEventStatus(id: string, status: EventStatus, actorId: string, actor?: EventActor) {
+  return updateEvent(id, { status }, actorId, actor);
+}
+
+export const APPROVAL_REQUEST_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * The party giver (or a manager) says the party was given: the Super Admin gets the
+ * approval request right away (in the party-day thread when there is one).
+ */
+export async function requestApproval(id: string, actor: EventActor) {
+  await connectDB();
+  const _id = assertObjectId(id, "event id");
+  const event = await PartyEvent.findById(_id).lean();
+  if (!event) throw notFound("Party not found");
+  if (!isPartyManager(actor.role) && (event.organizerEmail ?? "").toLowerCase() !== actor.email.toLowerCase()) {
+    throw forbidden("Only the party giver can ask for approval");
+  }
+  if (event.status !== "upcoming") throw badRequest(`This party is already ${event.status}`);
+  const day = dayKey(event.eventDate);
+  if (day > dayKey(new Date())) throw badRequest("You can ask for approval once the party has been given (on or after the party day)");
+  if (event.approvalRequestedAt && Date.now() - new Date(event.approvalRequestedAt).getTime() < APPROVAL_REQUEST_COOLDOWN_MS) {
+    throw conflict("Approval was already requested. The Super Admin has been notified.");
+  }
+  const now = new Date();
+  await PartyEvent.updateOne({ _id }, { $set: { approvalRequestedAt: now, approvalRequestedByEmail: actor.email } });
+  await enqueueJob({
+    jobType: "party_approval_request",
+    idempotencyKey: `party_approval_request:${id}:requested:${now.getTime()}`,
+    scheduledAt: now,
+    eventId: _id,
+    payload: { dayKey: day, requested: true, requestedBy: actor.name },
+  });
+  await audit({ action: "event.approval_request", entityType: "PartyEvent", entityId: id, actorId: actor.id });
+  return { requestedAt: now };
 }
 
 /** Permanently deletes an event, its pending jobs, its bill records and the physical files. */

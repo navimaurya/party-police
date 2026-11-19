@@ -21,12 +21,14 @@ async function setup(overrides: Record<string, unknown> = {}) {
   await createUser(UserCreateSchema.parse({ email: "priya@team.test", name: "Priya" }), actor);
   await createUser(UserCreateSchema.parse({ email: "ravi@team.test", name: "Ravi" }), actor);
   await createUser(UserCreateSchema.parse({ email: "gone@team.test", name: "Gone", isActive: false }), actor);
-  // These tests are about party-day emails; drop the welcome emails the new users triggered.
-  await ScheduledJob.deleteMany({ jobType: "user_welcome" });
+  // These tests are about party-day emails; drop the welcome / login emails the new users triggered.
+  await ScheduledJob.deleteMany({ jobType: { $in: ["user_welcome", "user_credentials"] } });
   const event = await createEvent(
     CreateEventSchema.parse(baseEvent({ organizerName: "Ravi", organizerEmail: "ravi@team.test", eventDate: atLocalHour(today, 18), ...overrides })),
     adminId
   );
+  // ...and the "new party" announcement that goes out a minute after creation.
+  await ScheduledJob.deleteMany({ jobType: "event_scheduled" });
   return { adminId, id: String(event._id) };
 }
 

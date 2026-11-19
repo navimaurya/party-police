@@ -29,6 +29,9 @@ export const NOTIFICATION_TYPES = [
   "party_approval_request",
   "party_giver_thanks",
   "user_welcome",
+  "user_credentials",
+  "user_role_upgrade",
+  "event_scheduled",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -63,23 +66,45 @@ export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
   party_approval_request: "Party-day approval request to the Super Admin",
   party_giver_thanks: "Thanks to the party giver after approval",
   user_welcome: "Welcome email to new users",
+  user_credentials: "Login credentials (username + one-time password)",
+  user_role_upgrade: "Role upgrade notice to the user",
+  event_scheduled: "New party announcement to participants",
 };
 
-export const USER_ROLES = ["super_admin", "admin", "member"] as const;
+export const USER_ROLES = ["super_admin", "admin", "manager", "member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
 /** Roles that can be given through the app. There is exactly one Super Admin, set from env. */
-export const ASSIGNABLE_ROLES = ["member", "admin"] as const;
+export const ASSIGNABLE_ROLES = ["member", "manager", "admin"] as const;
 export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
 
-/** Roles that can sign in to the admin panel. */
+/** Roles with full access to the admin panel. */
 export type AdminRole = "super_admin" | "admin";
+
+/**
+ * Higher = more power. Used for "role upgrade" emails and permission checks.
+ * - member:  signs in, adds their OWN parties, asks for approval once given.
+ * - manager: schedules and modifies anyone's parties.
+ * - admin:   everything except managing admins.
+ */
+export const ROLE_RANK: Record<UserRole, number> = { member: 0, manager: 1, admin: 2, super_admin: 3 };
+
+/** Can schedule / modify parties hosted by anyone. */
+export const isPartyManager = (role: UserRole) => ROLE_RANK[role] >= ROLE_RANK.manager;
+export const isAdminRole = (role: UserRole): role is AdminRole => ROLE_RANK[role] >= ROLE_RANK.admin;
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   super_admin: "Super Admin",
   admin: "Admin",
+  manager: "Manager",
   member: "Member",
 };
+
+/** Personal occasions stored on a user (their own and their relatives'). */
+export const OCCASION_TYPES = ["Birthday", "Anniversary", "Work anniversary", "Other"] as const;
+export type OccasionType = (typeof OCCASION_TYPES)[number];
+export const RELATIONS = ["Self", "Spouse", "Son", "Daughter", "Father", "Mother", "Brother", "Sister", "Other"] as const;
+export type Relation = (typeof RELATIONS)[number];
 
 export const SPECIAL_OCCASIONS = [
   "Birthday",

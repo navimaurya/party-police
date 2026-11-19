@@ -19,8 +19,12 @@ export function LoginForm() {
     setError(null);
     const form = new FormData(e.currentTarget);
     try {
-      await api("/api/auth/login", { method: "POST", json: { email: form.get("email"), password: form.get("password") } });
-      router.replace("/admin/dashboard");
+      const { user } = await api<{ user: { role: string; mustChangePassword: boolean } }>("/api/auth/login", {
+        method: "POST",
+        json: { email: form.get("email"), password: form.get("password") },
+      });
+      // One-time password: choose your own first. Then admins land on the dashboard, everyone else on their parties.
+      router.replace(user.mustChangePassword ? "/admin/change-password" : user.role === "admin" || user.role === "super_admin" ? "/admin/dashboard" : "/admin/parties");
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Login failed");

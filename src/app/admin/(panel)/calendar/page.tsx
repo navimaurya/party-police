@@ -8,8 +8,8 @@ export const metadata: Metadata = { title: "Calendar" };
 export default function AdminCalendarPage() {
   return (
     <div>
-      <PageHeader title="📅 Calendar" subtitle="Includes private parties. Click a party to manage it." action={<LinkButton href="/admin/parties/new">+ New party</LinkButton>} />
-      <PartyCalendar linkPrefix="/admin/parties/" />
+      <PageHeader title="📅 Calendar" subtitle="Click a party to open it, or the + on a date to schedule a party on that day." action={<LinkButton href="/admin/parties/new">+ New party</LinkButton>} />
+      <PartyCalendar linkPrefix="/admin/parties/" schedulePath="/admin/parties/new" />
     </div>
   );
 }

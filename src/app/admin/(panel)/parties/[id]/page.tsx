@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BillsManager } from "@/components/bills/bills-manager";
 import { EventForm } from "@/components/admin/event-form";
@@ -8,9 +8,10 @@ import { PageHeader } from "@/components/admin/page-header";
 import { StatusActions } from "@/components/admin/status-actions";
 import { CategoryBadge, StatusBadge } from "@/components/shared/badges";
 import { env } from "@/config/env";
-import { requireAdminPage } from "@/lib/auth";
+import { requireUserPage } from "@/lib/auth";
 import { AppError } from "@/lib/errors";
-import { formatDateTime } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
+import { dayKey } from "@/lib/time";
 import { serialize } from "@/lib/utils-server";
 import { NOTIFICATION_TYPE_LABELS, type NotificationType } from "@/types";
 import { listBills } from "@/services/bill.service";
@@ -18,15 +19,17 @@ import { getBudgetConfig } from "@/services/budget.service";
 import { getEvent } from "@/services/event.service";
 import { listEventJobs } from "@/services/notification.service";
 import { listActiveUsers } from "@/services/user.service";
-import { ROLE_LABELS } from "@/types";
+import { ROLE_LABELS, isAdminRole, isPartyManager } from "@/types";
 
-/** Request-time check (this page renders per request, after `connection()`). */
+/** Request-time check (this page renders per request, after `connection()`): the party day has come. */
 function hasStarted(date: string) {
-  return new Date(date).getTime() <= Date.now();
+  return dayKey(date) <= dayKey(new Date());
 }
 
 export default async function AdminPartyPage(props: PageProps<"/admin/parties/[id]">) {
-  await requireAdminPage();
+  const user = await requireUserPage();
+  const admin = isAdminRole(user.role);
+  const manager = isPartyManager(user.role);
   const { id } = await props.params;
   let raw;
   try {
@@ -35,6 +38,9 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
     if (err instanceof AppError && (err.status === 404 || err.status === 400)) notFound();
     throw err;
   }
+  const isGiver = (raw.organizerEmail ?? "").toLowerCase() === user.email.toLowerCase();
+  // Members manage only parties they give; for anyone else's party they see the public page.
+  if (!manager && !isGiver) redirect(raw.publicVisibility ? `/parties/${id}` : "/admin/parties");
   const [bills, budget, jobs, membersRaw] = await Promise.all([
     listBills({ eventId: id, admin: true, limit: 100 }),
     getBudgetConfig(),
@@ -43,16 +49,26 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
   ]);
   const members = membersRaw.map((m) => ({ name: m.name, email: m.email, role: ROLE_LABELS[m.role] }));
   const event = serialize(raw);
+  const viewer = { email: user.email, name: user.name, role: user.role };
   const pendingThankYou = jobs.find((j) => j.jobType === "thank_you" && j.status === "pending");
   const partyStarted = hasStarted(event.eventDate);
 
   return (
     <div className="space-y-6">
-      <Link href="/admin/parties" className="text-sm text-muted-foreground hover:text-foreground">← All parties</Link>
+      <Link href="/admin/parties" className="text-sm text-muted-foreground hover:text-foreground">← {manager ? "All parties" : "My parties"}</Link>
       <PageHeader
         title={event.title}
         subtitle={<span className="flex flex-wrap items-center gap-2"><CategoryBadge category={event.category} /><StatusBadge status={event.status} /> {event.publicVisibility ? <Link className="text-primary hover:underline" href={`/parties/${id}`}>View public page →</Link> : "🔒 Private"}</span>}
-        action={<StatusActions id={id} status={event.status} organizerName={event.organizerName} />}
+        action={
+          <StatusActions
+            id={id}
+            status={event.status}
+            organizerName={event.organizerName}
+            canApprove={admin}
+            canRequestApproval={(isGiver || manager) && !admin && event.status === "upcoming" && partyStarted}
+            approvalRequestedAt={event.approvalRequestedAt ?? null}
+          />
+        }
       />
       {event.status === "completed" && event.approvedAt && (
         <p className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-sm text-violet-900">
@@ -61,8 +77,17 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
       )}
       {event.status === "upcoming" && partyStarted && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          ⏳ <strong>Awaiting approval.</strong> Once {event.organizerName} has given the party, click <strong>Approve party</strong>. It&apos;s marked completed only after approval.
+          ⏳ <strong>Awaiting approval.</strong>{" "}
+          {admin ? (
+            <>Once {event.organizerName} has given the party, click <strong>Approve party</strong>. It&apos;s marked completed only after approval.</>
+          ) : (
+            <>Party given? Click <strong>Request approval</strong> and the Super Admin will confirm it.</>
+          )}
+          {event.approvalRequestedAt && <> Approval was requested{event.approvalRequestedByEmail ? <> by <strong>{event.approvalRequestedByEmail}</strong></> : null} on {formatDateTime(event.approvalRequestedAt)}.</>}
         </p>
+      )}
+      {event.status === "upcoming" && !partyStarted && (
+        <p className="rounded-xl border bg-muted/40 p-3 text-sm text-muted-foreground">📅 Party day: <strong className="text-foreground">{formatDate(event.eventDate)}</strong></p>
       )}
       {pendingThankYou && (
         <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
@@ -73,10 +98,10 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
         <Card>
           <CardHeader><CardTitle>Party details</CardTitle></CardHeader>
           <CardContent>
-            <EventForm initial={toFormValue(event)} budgetRules={serialize(budget.categories)} validationEnabled={budget.validationEnabled} members={members} />
+            <EventForm initial={toFormValue(event)} budgetRules={serialize(budget.categories)} validationEnabled={budget.validationEnabled} members={members} viewer={viewer} />
           </CardContent>
         </Card>
-        <div className="space-y-6">
+        {admin && <div className="space-y-6">
           <Card>
             <CardHeader><CardTitle>🧾 Bills & attachments</CardTitle></CardHeader>
             <CardContent>
@@ -104,7 +129,7 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
               <Link href="/admin/notifications" className="mt-3 inline-block text-xs text-primary hover:underline">Manage email queue →</Link>
             </CardContent>
           </Card>
-        </div>
+        </div>}
       </div>
     </div>
   );

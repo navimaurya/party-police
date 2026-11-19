@@ -20,7 +20,14 @@ export async function api<T = unknown>(url: string, init: RequestInit & { json?:
   const body = await res.json().catch(() => null);
   if (!res.ok || !body?.success) {
     const err = body?.error ?? { code: "HTTP_ERROR", message: `Request failed (${res.status})` };
-    if (res.status === 401 && typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
+    const path = typeof window !== "undefined" ? window.location.pathname : "";
+    if (res.status === 403 && err.code === "PASSWORD_CHANGE_REQUIRED" && path !== "/admin/change-password") {
+      // Hard navigation on purpose, like the 401 case below.
+      // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+      window.location.href = "/admin/change-password";
+    }
+    // Not on the login page itself, so its "wrong password" message stays on screen.
+    if (res.status === 401 && path.startsWith("/admin") && path !== "/admin/login") {
       // Hard navigation on purpose: the session is gone, so drop all client state.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
       window.location.href = "/admin/login";

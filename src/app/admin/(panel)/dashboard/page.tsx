@@ -7,7 +7,7 @@ import { LinkButton } from "@/components/shared/link-button";
 import { CategoryBadge } from "@/components/shared/badges";
 import { Countdown } from "@/components/shared/countdown";
 import { requireAdminPage } from "@/lib/auth";
-import { formatDateTime } from "@/lib/format";
+import { formatPartyDate } from "@/lib/format";
 import { serialize } from "@/lib/utils-server";
 import { getDashboardStats } from "@/services/dashboard.service";
 
@@ -48,7 +48,7 @@ export default async function DashboardPage() {
               {s.awaitingApproval.map((e) => (
                 <li key={e._id}>
                   <Link href={`/admin/parties/${e._id}`} className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm hover:bg-muted/50">
-                    <span><strong>{e.title}</strong> <span className="text-muted-foreground">· {e.organizerName} · {formatDateTime(e.eventDate)}</span></span>
+                    <span><strong>{e.title}</strong> <span className="text-muted-foreground">· {e.organizerName} · {formatPartyDate(e.eventDate)}</span></span>
                     <span className="font-medium text-primary">Review & approve →</span>
                   </Link>
                 </li>
@@ -85,7 +85,7 @@ export default async function DashboardPage() {
                 <p className="text-xs font-semibold uppercase tracking-wider text-primary">Next upcoming party</p>
                 <h2 className="text-xl font-bold">{s.nextUp.title}</h2>
                 <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                  <CategoryBadge category={s.nextUp.category} /> {s.nextUp.organizerName} · {formatDateTime(s.nextUp.eventDate)}
+                  <CategoryBadge category={s.nextUp.category} /> {s.nextUp.organizerName} · {formatPartyDate(s.nextUp.eventDate)}
                 </div>
                 <LinkButton href={`/admin/parties/${s.nextUp._id}`} size="sm" variant="outline" className="mt-2">Manage</LinkButton>
               </div>

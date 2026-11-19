@@ -13,7 +13,7 @@ import { ConfirmButton } from "@/components/admin/confirm";
 import { SortHeader } from "@/components/shared/sort-header";
 import { EVENT_DEFAULT_SORT } from "@/lib/sort-fields";
 import { api, toastError } from "@/lib/api-client";
-import { formatDateTime, formatMoney } from "@/lib/format";
+import { formatMoney, formatPartyDate } from "@/lib/format";
 import { EMPTY_STATES } from "@/lib/humor";
 import type { EventCardData } from "@/components/events/event-card";
 import type { EventStatus } from "@/types";
@@ -67,7 +67,7 @@ export function EventsTable({ events, sort = EVENT_DEFAULT_SORT }: { events: (Ev
                   <span>by {e.organizerName}</span>
                 </div>
               </TableCell>
-              <TableCell className="hidden whitespace-nowrap text-sm md:table-cell">{formatDateTime(e.eventDate)}</TableCell>
+              <TableCell className="hidden whitespace-nowrap text-sm md:table-cell">{formatPartyDate(e.eventDate)}</TableCell>
               <TableCell className="hidden text-sm sm:table-cell">{formatMoney(e.budget, e.currency)}</TableCell>
               <TableCell><StatusBadge status={e.status} /></TableCell>
               <TableCell>

@@ -3,7 +3,7 @@ import { EventsTable } from "@/components/admin/events-table";
 import { PageHeader } from "@/components/admin/page-header";
 import { LinkButton } from "@/components/shared/link-button";
 import { Input } from "@/components/ui/input";
-import { requireAdminPage } from "@/lib/auth";
+import { requireManagerPage, requireUserPage } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { serialize } from "@/lib/utils-server";
 import { EventListQuerySchema } from "@/lib/validation";
@@ -22,17 +22,19 @@ export const EVENT_SORT_OPTIONS = [
   { value: "status", label: "Status" },
   { value: "-createdAt", label: "Recently added" },
 ];
-import { CATEGORY_EMOJI, CATEGORY_LABELS, type EventCategory } from "@/types";
+import { CATEGORY_EMOJI, CATEGORY_LABELS, isPartyManager, type EventCategory } from "@/types";
 
 type SP = Record<string, string | string[] | undefined>;
 
 export async function PartiesAdminView({ basePath, category, searchParams }: { basePath: string; category?: EventCategory; searchParams: Promise<SP> }) {
-  await requireAdminPage();
+  // Category pages are for managers+; "/admin/parties" is for everyone (members see only their own).
+  const user = category ? await requireManagerPage() : await requireUserPage();
+  const mine = !isPartyManager(user.role);
   const sp = Object.fromEntries(Object.entries(await searchParams).map(([k, v]) => [k, Array.isArray(v) ? v[0] : v]));
   const parsed = EventListQuerySchema.safeParse({ ...sp, category: category ?? sp.category, limit: 20 });
   const q = parsed.success ? parsed.data : EventListQuerySchema.parse({ category, limit: 20 });
   const sort = parseSort(q.sort, EVENT_SORT_FIELDS, EVENT_DEFAULT_SORT);
-  const { items, total } = await listEvents(q, { admin: true });
+  const { items, total } = await listEvents(q, { admin: true, organizerEmail: mine ? user.email : undefined });
   const pages = Math.max(1, Math.ceil(total / q.limit));
   const href = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams();
@@ -46,8 +48,8 @@ export async function PartiesAdminView({ basePath, category, searchParams }: { b
   return (
     <div>
       <PageHeader
-        title={category ? `${CATEGORY_EMOJI[category]} ${CATEGORY_LABELS[category]}s` : "🎉 Party Management"}
-        subtitle={`${total} part${total === 1 ? "y" : "ies"} found`}
+        title={category ? `${CATEGORY_EMOJI[category]} ${CATEGORY_LABELS[category]}s` : mine ? "🎉 My Parties" : "🎉 Party Management"}
+        subtitle={mine ? `Parties you are giving · ${total} found. Add yours, and ask for approval once it's done.` : `${total} part${total === 1 ? "y" : "ies"} found`}
         action={
           <div className="flex gap-2">
             <LinkButton href={`/admin/parties/new?type=instant${category ? `&category=${category}` : ""}`} variant="outline">🚨 Instant</LinkButton>

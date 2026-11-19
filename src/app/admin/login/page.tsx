@@ -11,7 +11,7 @@ export default function LoginPage() {
         <div className="space-y-2 text-center">
           <Image src="/assets/logo/party-police.svg" alt="" width={56} height={56} className="mx-auto" priority />
           <h1 className="text-2xl font-bold">Party Committee HQ</h1>
-          <p className="text-sm text-muted-foreground">Authorised personnel only. Party defaulters, turn back now. 🚨</p>
+          <p className="text-sm text-muted-foreground">Sign in with your email and password. Party defaulters, turn back now. 🚨</p>
         </div>
         <LoginForm />
       </div>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { connection } from "next/server";
-import { getAdmin } from "@/lib/auth";
+import { getSessionUser } from "@/lib/auth";
+import { NavLinks } from "@/components/admin/sidebar";
 import { UserAvatar } from "@/components/admin/user-badges";
 import { ROLE_LABELS } from "@/types";
 
@@ -8,7 +9,7 @@ import { ROLE_LABELS } from "@/types";
 export async function SidebarAccount() {
   // Request-time data (session + DB): never prerendered.
   await connection();
-  const me = await getAdmin();
+  const me = await getSessionUser();
   if (!me) return null;
   return (
     <Link href="/admin/profile" className="flex items-center gap-3 rounded-lg px-2 py-2 transition hover:bg-sidebar-accent" title="My profile">
@@ -19,6 +20,14 @@ export async function SidebarAccount() {
       </span>
     </Link>
   );
+}
+
+/** Role-filtered navigation. Rendered on the server so the role comes from the session. */
+export async function SidebarNav() {
+  await connection();
+  const me = await getSessionUser();
+  if (!me) return null;
+  return <NavLinks role={me.role} />;
 }
 
 export function SidebarAccountSkeleton() {

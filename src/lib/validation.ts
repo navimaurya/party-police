@@ -9,6 +9,8 @@ import {
   ASSIGNABLE_ROLES,
   USER_ROLES,
   NOTIFICATION_TYPES,
+  OCCASION_TYPES,
+  RELATIONS,
 } from "@/types";
 
 const trimmed = (max: number) => z.string().trim().max(max);
@@ -23,6 +25,14 @@ const nullableDate = z
   .union([z.coerce.date(), z.literal(""), z.null()])
   .optional()
   .transform((v) => (v instanceof Date ? v : v === undefined ? undefined : null));
+
+/** "yyyy-MM-dd": a calendar day without a time. */
+export const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * Party date. Parties are scheduled by day (no time): a "yyyy-MM-dd" string is kept as is
+ * and turned into an instant in APP_TIMEZONE by the event service. Full timestamps still work.
+ */
+const eventDateInput = z.union([z.string().regex(DAY_KEY_RE, "Invalid date"), isoDate]);
 
 export const objectIdString = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
 
@@ -57,7 +67,7 @@ const eventBase = {
   occasion: trimmed(200).default(""),
   description: trimmed(5000).default(""),
   location: trimmed(300).default(""),
-  eventDate: isoDate.optional(),
+  eventDate: eventDateInput.optional(),
   participants: z.array(ParticipantSchema).max(500).default([]),
   budget: z.number().nonnegative().max(100_000_000).nullable().optional(),
   currency: z.string().length(3).toUpperCase().default("INR"),
@@ -69,7 +79,7 @@ const eventBase = {
 
 export const CreateEventSchema = z
   .object({ ...eventBase, status: z.enum(EVENT_STATUSES).default("upcoming") })
-  .refine((v) => v.eventType === "instant" || v.eventDate instanceof Date, {
+  .refine((v) => v.eventType === "instant" || v.eventDate !== undefined, {
     message: "Event date is required for scheduled parties",
     path: ["eventDate"],
   });
@@ -84,7 +94,7 @@ export const UpdateEventSchema = z
     occasion: trimmed(200).optional(),
     description: trimmed(5000).optional(),
     location: trimmed(300).optional(),
-    eventDate: isoDate.optional(),
+    eventDate: eventDateInput.optional(),
     participants: z.array(ParticipantSchema).max(500).optional(),
     budget: eventBase.budget,
     currency: z.string().length(3).toUpperCase().optional(),
@@ -293,6 +303,16 @@ export const TestEmailSchema = z.object({ to: z.email() });
 
 const password = z.string().min(10, "Password must be at least 10 characters").max(200);
 
+export const OccasionSchema = z
+  .object({
+    personName: trimmed(100).min(1, "Name is required"),
+    relation: z.enum(RELATIONS).default("Self"),
+    occasion: z.enum(OCCASION_TYPES).default("Birthday"),
+    label: trimmed(100).default(""),
+    date: isoDate,
+  })
+  .strict();
+
 const profileFields = {
   name: trimmed(100).min(1, "Name is required"),
   phone: trimmed(30).optional(),
@@ -300,6 +320,8 @@ const profileFields = {
   designation: trimmed(100).optional(),
   birthday: nullableDate,
   joinedOn: nullableDate,
+  /** Relatives' (and other) occasions. Replaces the whole list when sent. */
+  occasions: z.array(OccasionSchema).max(50).optional(),
 };
 
 export const UserCreateSchema = z
@@ -309,14 +331,13 @@ export const UserCreateSchema = z
     notes: trimmed(1000).optional(),
     role: z.enum(ASSIGNABLE_ROLES).default("member"),
     isActive: z.boolean().optional(),
-    /** Required for admins: their sign-in password. */
+    /**
+     * Optional sign-in password. Without one, the user is emailed their username and a
+     * one-time password right after the welcome email.
+     */
     password: password.optional(),
   })
-  .strict()
-  .superRefine((v, ctx) => {
-    if (v.role === "admin" && !v.password)
-      ctx.addIssue({ code: "custom", path: ["password"], message: "Admins need a password to sign in" });
-  });
+  .strict();
 
 /** Email is the user's key and cannot be changed. */
 export const UserUpdateSchema = z
@@ -326,7 +347,7 @@ export const UserUpdateSchema = z
     notes: trimmed(1000).optional(),
     role: z.enum(ASSIGNABLE_ROLES).optional(),
     isActive: z.boolean().optional(),
-    /** Sets a new sign-in password for an admin. */
+    /** Super Admin only: a one-time password. The user must replace it after signing in. */
     password: password.optional(),
   })
   .strict();
@@ -340,6 +361,15 @@ export const UserListQuerySchema = ListQuerySchema.extend({
 
 /** What a signed-in user may change about themselves. */
 export const ProfileUpdateSchema = z.object({ ...profileFields, name: profileFields.name.optional() }).strict();
+
+export const CredentialsSendSchema = z
+  .object({
+    /** One user, or every active user who can't sign in yet. */
+    userId: objectIdString.optional(),
+    allWithoutPassword: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => !!v.userId !== !!v.allWithoutPassword, { message: "Pass either userId or allWithoutPassword" });
 
 export const ChangePasswordSchema = z
   .object({ currentPassword: z.string().min(1).max(200), newPassword: password })

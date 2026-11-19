@@ -1,4 +1,4 @@
-import { Crown, ShieldCheck, UserRound } from "lucide-react";
+import { CalendarCog, Crown, ShieldCheck, UserRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ROLE_LABELS, type UserRole } from "@/types";
 
@@ -41,6 +41,7 @@ export function UserAvatar({ name, email, size = "md", className }: { name: stri
 const ROLE_STYLE: Record<UserRole, { className: string; icon: typeof Crown }> = {
   super_admin: { className: "bg-amber-100 text-amber-800 ring-amber-200", icon: Crown },
   admin: { className: "bg-violet-100 text-violet-700 ring-violet-200", icon: ShieldCheck },
+  manager: { className: "bg-sky-100 text-sky-700 ring-sky-200", icon: CalendarCog },
   member: { className: "bg-slate-100 text-slate-700 ring-slate-200", icon: UserRound },
 };
 

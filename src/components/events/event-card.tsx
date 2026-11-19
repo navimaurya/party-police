@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CalendarDays, MapPin, User, Wallet } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { CategoryBadge, InstantBadge, StatusBadge } from "@/components/shared/badges";
-import { formatDateTime, formatMoney } from "@/lib/format";
+import { formatMoney, formatPartyDate } from "@/lib/format";
 import type { EventCategory, EventStatus, EventType } from "@/types";
 
 export type EventCardData = {
@@ -34,7 +34,7 @@ export function EventCard({ event, href, showBudget = false }: { event: EventCar
         </div>
         <ul className="space-y-1 text-sm text-muted-foreground">
           <li className="flex items-center gap-2"><User className="size-4" /> Hosted by <span className="font-medium text-foreground">{event.organizerName}</span></li>
-          <li className="flex items-center gap-2"><CalendarDays className="size-4" /> {formatDateTime(event.eventDate)}</li>
+          <li className="flex items-center gap-2"><CalendarDays className="size-4" /> {formatPartyDate(event.eventDate)}</li>
           {event.location && <li className="flex items-center gap-2"><MapPin className="size-4" /> {event.location}</li>}
           {showBudget && event.budget != null && (
             <li className="flex items-center gap-2"><Wallet className="size-4" /> {formatMoney(event.budget, event.currency)}</li>

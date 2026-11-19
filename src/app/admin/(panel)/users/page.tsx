@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ShieldCheck, UserCheck, UserRound, Users } from "lucide-react";
+import { CalendarCog, ShieldCheck, UserCheck, UserRound, Users } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/admin/page-header";
 import { UsersManager } from "@/components/admin/users-manager";
@@ -25,13 +25,14 @@ export default async function UsersPage(props: PageProps<"/admin/users">) {
     { label: "Total users", value: summary.total, icon: Users, tone: "bg-pink-100 text-pink-700" },
     { label: "Active", value: summary.active, icon: UserCheck, tone: "bg-emerald-100 text-emerald-700" },
     { label: "Admins", value: summary.admins, icon: ShieldCheck, tone: "bg-violet-100 text-violet-700" },
+    { label: "Managers", value: summary.managers, icon: CalendarCog, tone: "bg-sky-100 text-sky-700" },
     { label: "Members", value: summary.members, icon: UserRound, tone: "bg-slate-100 text-slate-700" },
   ];
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Users" subtitle="Everyone on the team. Active users receive party emails and can be party givers; admins can also sign in." />
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <PageHeader title="Users" subtitle="Everyone on the team. Active users receive party emails, can be party givers and sign in with their email and password." />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {stats.map(({ label, value, icon: Icon, tone }) => (
           <Card key={label} size="sm">
             <CardContent className="flex items-center gap-3">

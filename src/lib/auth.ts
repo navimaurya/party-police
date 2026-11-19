@@ -3,8 +3,9 @@ import "server-only";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { env } from "@/config/env";
-import { forbidden, unauthorized } from "@/lib/errors";
-import { validateSessionToken, type AdminIdentity } from "@/services/auth.service";
+import { AppError, forbidden, unauthorized } from "@/lib/errors";
+import { validateSessionToken, type AdminIdentity, type SessionUser } from "@/services/auth.service";
+import { isAdminRole, isPartyManager } from "@/types";
 
 export const SESSION_COOKIE = "pp_session";
 
@@ -18,18 +19,57 @@ export function sessionCookieOptions(expires: Date) {
   };
 }
 
-/** Reads and validates the admin session from the request cookies (Server Components / Route Handlers). */
-export async function getAdmin(): Promise<AdminIdentity | null> {
+/** Reads and validates the session (any role) from the request cookies. */
+export async function getSessionUser(): Promise<SessionUser | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   return validateSessionToken(token);
 }
 
-/** For protected pages: redirects to the login page when unauthenticated. */
-export async function requireAdminPage(): Promise<AdminIdentity> {
+/**
+ * The signed-in admin (Super Admin or admin), or null for everyone else, including
+ * managers, members and anyone who still has to replace a one-time password.
+ */
+export async function getAdmin(): Promise<AdminIdentity | null> {
+  const user = await getSessionUser();
+  if (!user || user.mustChangePassword || !isAdminRole(user.role)) return null;
+  return user as AdminIdentity;
+}
+
+/** A signed-in manager or admin: sees private parties and can edit anyone's party. */
+export async function getPartyManager(): Promise<SessionUser | null> {
+  const user = await getSessionUser();
+  if (!user || user.mustChangePassword || !isPartyManager(user.role)) return null;
+  return user;
+}
+
+export const CHANGE_PASSWORD_PATH = "/admin/change-password";
+/** Where a signed-in user without access to a page is sent. Every role can open it. */
+export const HOME_PATH = "/admin/parties";
+
+/**
+ * For any signed-in user. Redirects to the login page when unauthenticated, and to the
+ * change-password page while the user still has a one-time password.
+ */
+export async function requireUserPage(opts: { allowPasswordChange?: boolean } = {}): Promise<SessionUser> {
   await connection();
-  const admin = await getAdmin();
-  if (!admin) redirect("/admin/login");
-  return admin;
+  const user = await getSessionUser();
+  if (!user) redirect("/admin/login");
+  if (user.mustChangePassword && !opts.allowPasswordChange) redirect(CHANGE_PASSWORD_PATH);
+  return user;
+}
+
+/** For manager-and-above pages. */
+export async function requireManagerPage(): Promise<SessionUser> {
+  const user = await requireUserPage();
+  if (!isPartyManager(user.role)) redirect(HOME_PATH);
+  return user;
+}
+
+/** For admin pages: others are sent to their parties. */
+export async function requireAdminPage(): Promise<AdminIdentity> {
+  const user = await requireUserPage();
+  if (!isAdminRole(user.role)) redirect(HOME_PATH);
+  return user as AdminIdentity;
 }
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -61,12 +101,29 @@ function safeOrigin(url: string): string | null {
   }
 }
 
+/** Any signed-in user. While a one-time password is in use, only `allowPasswordChange` routes work. */
+export async function requireUserApi(req: Request, opts: { allowPasswordChange?: boolean } = {}): Promise<SessionUser> {
+  const user = await getSessionUser();
+  if (!user) throw unauthorized();
+  await assertSameOrigin(req);
+  if (user.mustChangePassword && !opts.allowPasswordChange) {
+    throw new AppError(403, "PASSWORD_CHANGE_REQUIRED", "Please set a new password before continuing");
+  }
+  return user;
+}
+
+/** Managers and above. */
+export async function requireManagerApi(req: Request): Promise<SessionUser> {
+  const user = await requireUserApi(req);
+  if (!isPartyManager(user.role)) throw forbidden("Only managers and admins can do this");
+  return user;
+}
+
 /** For protected API routes: validates session on every request + CSRF check for mutations. */
 export async function requireAdminApi(req: Request): Promise<AdminIdentity> {
-  const admin = await getAdmin();
-  if (!admin) throw unauthorized();
-  await assertSameOrigin(req);
-  return admin;
+  const user = await requireUserApi(req);
+  if (!isAdminRole(user.role)) throw forbidden("Only admins can do this");
+  return user as AdminIdentity;
 }
 
 /** For Super-Admin-only API routes. */
