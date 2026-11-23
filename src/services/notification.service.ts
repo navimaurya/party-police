@@ -22,6 +22,8 @@ import { audit } from "./audit.service";
 import { activeUserEmails } from "./user.service";
 import { hashPassword, revokeSessions, superAdminEmails } from "./auth.service";
 import { randomToken } from "@/lib/crypto";
+import { computeContriSplit, type ContriInput } from "@/lib/contri";
+import { upiQrPng } from "@/lib/upi-qr";
 import type { NotificationType, UserRole } from "@/types";
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
@@ -71,6 +73,13 @@ async function participantRecipients(settings: Settings, event: { participants?:
   return uniqueEmails([...participants, event.organizerEmail]);
 }
 
+/** Contri split for a party, using the host's profile UPI ID when the party has none. */
+export async function contriSplitFor(event: ContriInput) {
+  if (event.category !== "contri") return null;
+  const host = event.organizerEmail ? await User.findOne({ email: event.organizerEmail.toLowerCase() }).select({ upiId: 1 }).lean() : null;
+  return computeContriSplit(event, host?.upiId);
+}
+
 /* Party-day confirmation thread: giver notice (root) -> approval request -> thanks after approval. */
 export const partyDayKeys = (eventId: string, day: string) => ({
   members: `party_day:${eventId}:${day}`,
@@ -105,6 +114,14 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
             if (b.isPublic && event.publicVisibility) bills.push({ name: b.originalFileName, url: publicFileUrl(String(b._id)) });
             else if (settings.thankYou?.includePrivateBillLinks)
               bills.push({ name: `${b.originalFileName} (private link, expires)`, url: signedFileUrl(String(b._id), "view", ttl).url });
+          }
+        }
+        if (event.category === "contri") {
+          // Everyone paid: a "thank yourselves" email with each person's share and a UPI QR to pay the host.
+          const split = await contriSplitFor(event);
+          if (split) {
+            const qr = split.upiLink ? await upiQrPng(split.upiLink) : null;
+            return { to: await participantRecipients(settings, event), rendered: T.contriThankYouEmail(event, split, bills, qr) };
           }
         }
         return { to: await to(), rendered: T.thankYouEmail(event, bills) };
@@ -192,7 +209,10 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
           // The Super Admin is copied so the thread is closed in their inbox too.
           cc: uniqueEmails(await superAdminEmails()).filter((e) => e !== giver),
           thread: { inReplyTo: root, references: [root] },
-          rendered: T.giverThanksEmail(event, subject, event.approvedAt ?? event.completedAt ?? new Date()),
+          rendered:
+            event.category === "contri"
+              ? T.contriHostThanksEmail(event, subject, await contriSplitFor(event))
+              : T.giverThanksEmail(event, subject, event.approvedAt ?? event.completedAt ?? new Date()),
         };
       }
       default:

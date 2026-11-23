@@ -14,9 +14,11 @@ import { NativeSelect } from "@/components/admin/native-select";
 import { ParticipantPicker, type Participant } from "@/components/admin/participant-picker";
 import { api, ApiClientError, toastError } from "@/lib/api-client";
 import { formatMoney } from "@/lib/format";
+import { computeContriSplit, defaultHeadcount, formatRupees } from "@/lib/contri";
 import type { EventFormValue } from "@/components/admin/event-form-value";
 import {
   CATEGORY_LABELS,
+  CONTRI_OCCASIONS,
   EVENT_CATEGORIES,
   OCCASIONAL_OCCASIONS,
   SPECIAL_OCCASIONS,
@@ -38,7 +40,7 @@ const PREF_LABELS = {
   includeBillLinks: "Include bill links in thank-you",
 } as const;
 
-export type MemberOption = { name: string; email: string; role?: string };
+export type MemberOption = { name: string; email: string; role?: string; upiId?: string };
 /** The signed-in user. Members can only add/edit parties they give; only admins approve. */
 export type EventFormViewer = { email: string; name: string; role: UserRole };
 
@@ -83,7 +85,15 @@ export function EventForm({
     else setV((s) => ({ ...s, organizerName: "", organizerEmail: "" }));
   };
 
-  const occasions = v.category === "special" ? SPECIAL_OCCASIONS : v.category === "occasional" ? OCCASIONAL_OCCASIONS : ["Monthly treat", "Team lunch", "Monthly celebration"];
+  const occasions =
+    v.category === "special" ? SPECIAL_OCCASIONS : v.category === "occasional" ? OCCASIONAL_OCCASIONS : v.category === "contri" ? CONTRI_OCCASIONS : ["Monthly treat", "Team lunch", "Monthly celebration"];
+
+  // Contri party: live preview of what each person pays (the server computes the same).
+  const contri = { totalAmount: null, splitCount: null, upiId: "", ...(v.contri ?? {}) };
+  const setContri = (patch: Partial<typeof contri>) => set("contri", { ...contri, ...patch });
+  const hostUpi = giver?.upiId ?? "";
+  const autoHeadcount = defaultHeadcount({ participants, organizerName: v.organizerName, organizerEmail: v.organizerEmail });
+  const split = computeContriSplit({ category: v.category, title: v.title, organizerName: v.organizerName || "the host", organizerEmail: v.organizerEmail, participants, budget: v.budget, contri }, hostUpi);
 
   async function submit(budgetOverride?: { reason: string }) {
     setPending(true);
@@ -98,6 +108,7 @@ export function EventForm({
       location: v.location ?? "",
       participants: participants.map((p) => ({ name: p.name, email: p.email || "" })),
       budget: v.budget ?? null,
+      ...(v.category === "contri" ? { contri: { totalAmount: contri.totalAmount ?? null, splitCount: contri.splitCount ?? null, upiId: (contri.upiId ?? "").trim() } } : {}),
       currency: v.currency || "INR",
       status: v.status,
       publicVisibility: v.publicVisibility,
@@ -227,6 +238,58 @@ export function EventForm({
           <ParticipantPicker id="participants" users={members} value={participants} onChange={setParticipants} />
         </div>
       </div>
+
+      {v.category === "contri" && (
+        <fieldset className="space-y-3 rounded-2xl border border-teal-200 bg-teal-50/40 p-4">
+          <legend className="px-1 text-sm font-semibold">🤝 Contri split</legend>
+          <p className="text-xs text-muted-foreground">The host pays the bill; everyone splits it and pays the host back by scanning a UPI QR on the party page and in the thank-you email.</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="contri-total">Total paid by host (₹)</Label>
+              <Input
+                id="contri-total"
+                type="number"
+                min={0}
+                step="0.01"
+                inputMode="decimal"
+                value={contri.totalAmount ?? ""}
+                placeholder={v.budget ? String(v.budget) : "e.g. 2500"}
+                onChange={(e) => setContri({ totalAmount: e.target.value === "" ? null : Number(e.target.value) })}
+              />
+              <p className="text-xs text-muted-foreground">Empty = the budget above.</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="contri-count">Split between (people)</Label>
+              <Input
+                id="contri-count"
+                type="number"
+                min={1}
+                step="1"
+                inputMode="numeric"
+                value={contri.splitCount ?? ""}
+                placeholder={String(autoHeadcount)}
+                onChange={(e) => setContri({ splitCount: e.target.value === "" ? null : Math.max(1, Math.round(Number(e.target.value))) })}
+              />
+              <p className="text-xs text-muted-foreground">Empty = participants + host ({autoHeadcount}).</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="contri-upi">Host&apos;s UPI ID</Label>
+              <Input id="contri-upi" maxLength={100} autoComplete="off" value={contri.upiId ?? ""} placeholder={hostUpi || "name@okhdfcbank"} onChange={(e) => setContri({ upiId: e.target.value })} />
+              <p className="text-xs text-muted-foreground">{hostUpi ? "Empty = the host's UPI ID from their profile." : "Or add it to the host's profile."}</p>
+            </div>
+          </div>
+          <p className="rounded-xl bg-background p-3 text-sm" aria-live="polite">
+            {split ? (
+              <>
+                💸 <strong>{formatRupees(split.perHead)}</strong> each · {formatRupees(split.total)} split between {split.headcount} {split.headcount === 1 ? "person" : "people"} ·{" "}
+                {split.upiId ? <>paid to <strong>{split.upiId}</strong></> : <span className="text-amber-700">no UPI ID yet, so no QR code</span>}
+              </>
+            ) : (
+              <span className="text-muted-foreground">Enter the total (or a budget) to see each person&apos;s share.</span>
+            )}
+          </p>
+        </fieldset>
+      )}
 
       <fieldset className="space-y-3 rounded-2xl border p-4">
         <legend className="px-1 text-sm font-semibold">Visibility & notifications</legend>

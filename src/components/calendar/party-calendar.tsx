@@ -42,6 +42,7 @@ const CHIP: Record<EventCategory, string> = {
   monthly: "bg-pink-100 text-pink-800 hover:bg-pink-200",
   special: "bg-violet-100 text-violet-800 hover:bg-violet-200",
   occasional: "bg-amber-100 text-amber-900 hover:bg-amber-200",
+  contri: "bg-teal-100 text-teal-900 hover:bg-teal-200",
 };
 
 function rangeFor(view: View, cursor: Date) {

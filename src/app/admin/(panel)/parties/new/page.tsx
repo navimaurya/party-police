@@ -21,7 +21,7 @@ export default async function NewPartyPage(props: PageProps<"/admin/parties/new"
   const date = typeof sp.date === "string" && DAY_KEY_RE.test(sp.date) ? sp.date : "";
   const [budgetRaw, membersRaw] = await Promise.all([getBudgetConfig(), listActiveUsers()]);
   const budget = serialize(budgetRaw);
-  const members = membersRaw.map((m) => ({ name: m.name, email: m.email, role: ROLE_LABELS[m.role] }));
+  const members = membersRaw.map((m) => ({ name: m.name, email: m.email, role: ROLE_LABELS[m.role], upiId: m.upiId ?? "" }));
   const viewer = { email: user.email, name: user.name, role: user.role };
   // Members can only add parties they're giving.
   const initial = { ...toFormValue({ eventType: type, category }), ...(date ? { eventDate: date } : {}), ...(isPartyManager(user.role) ? {} : { organizerName: user.name, organizerEmail: user.email }) };

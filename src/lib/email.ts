@@ -47,7 +47,11 @@ export type OutgoingEmail = {
   cc?: string[];
   /** Email threading: our own Message-ID plus the message this one replies to. */
   thread?: { messageId?: string; inReplyTo?: string; references?: string[] };
+  /** Inline images referenced from the HTML as `cid:<cid>` (e.g. a UPI QR code). */
+  attachments?: EmailAttachment[];
 };
+
+export type EmailAttachment = { filename: string; content: Buffer; contentType: string; cid: string };
 
 /**
  * Domain for Message-IDs: the sender's own domain (from SMTP_FROM). A made-up domain
@@ -115,6 +119,7 @@ export async function sendEmail(msg: OutgoingEmail): Promise<SendResult> {
       inReplyTo: msg.thread?.inReplyTo,
       references: msg.thread?.references,
       headers: { "X-Party-Police-Key": msg.idempotencyKey },
+      attachments: msg.attachments?.map((a) => ({ ...a, contentDisposition: "inline" as const })),
     });
   } catch (err) {
     if (isConnectionError(err)) {

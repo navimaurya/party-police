@@ -10,7 +10,8 @@ import { DiscountCard } from "@/components/shared/discount-card";
 import { AppError } from "@/lib/errors";
 import { formatBytes, formatMoney, formatPartyDate } from "@/lib/format";
 import { serialize } from "@/lib/utils-server";
-import { getEvent } from "@/services/event.service";
+import { getEvent, getEventContriSplit } from "@/services/event.service";
+import { ContriPaymentCard } from "@/components/shared/contri-payment-card";
 import { listBills } from "@/services/bill.service";
 import { listActiveDiscounts } from "@/services/discount.service";
 
@@ -39,9 +40,10 @@ async function PartyDetail({ params }: { params: PageProps<"/parties/[id]">["par
   await connection();
   const { id } = await params;
   const event = serialize(await load(id));
-  const [bills, deals] = await Promise.all([
+  const [bills, deals, split] = await Promise.all([
     listBills({ eventId: id, admin: false }),
     event.status === "upcoming" ? listActiveDiscounts({ category: event.category, venue: event.location || undefined }) : Promise.resolve([]),
+    getEventContriSplit(id, { admin: false }),
   ]);
   const files = serialize(bills.items);
   const discounts = serialize(deals);
@@ -70,9 +72,16 @@ async function PartyDetail({ params }: { params: PageProps<"/parties/[id]">["par
             <Countdown to={event.eventDate} />
           </div>
         )}
-        {event.status === "completed" && <p className="mt-6 rounded-xl bg-emerald-50 p-3 text-emerald-800">🎉 This party happened! {event.organizerName} has been promoted to Party Legend.</p>}
+        {event.status === "completed" &&
+          (event.category === "contri" ? (
+            <p className="mt-6 rounded-xl bg-emerald-50 p-3 text-emerald-800">🎉 This contri party happened! Everyone chipped in, so thank yourself. Then pay {event.organizerName} back. 🫵</p>
+          ) : (
+            <p className="mt-6 rounded-xl bg-emerald-50 p-3 text-emerald-800">🎉 This party happened! {event.organizerName} has been promoted to Party Legend.</p>
+          ))}
         {event.status === "cancelled" && <p className="mt-6 rounded-xl bg-zinc-100 p-3 text-zinc-700">😢 Cancelled. The debt, however, remains on record. 📒</p>}
       </div>
+
+      {split && <ContriPaymentCard split={split} hostName={event.organizerName} />}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {event.participants?.length > 0 && (

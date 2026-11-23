@@ -11,6 +11,7 @@ import { mongoSort, parseSort, TEXT_COLLATION } from "@/lib/sort";
 import { EVENT_DEFAULT_SORT, EVENT_SORT_FIELDS } from "@/lib/sort-fields";
 import type { CreateEventSchema, EventListQuerySchema, UpdateEventSchema } from "@/lib/validation";
 import { atLocalHour, dayKey } from "@/lib/time";
+import { computeContriSplit } from "@/lib/contri";
 import { isAdminRole, isPartyManager, type EventStatus, type UserRole } from "@/types";
 import { enforceBudget } from "./budget.service";
 import { audit } from "./audit.service";
@@ -221,8 +222,13 @@ export async function updateEvent(id: string, input: UpdateInput, actorId: strin
     }));
   }
 
-  const $set: Record<string, unknown> = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+  const { contri, ...plain } = rest;
+  const $set: Record<string, unknown> = Object.fromEntries(Object.entries(plain).filter(([, v]) => v !== undefined));
   if (nextDate) $set.eventDate = nextDate;
+  // Partial update of the contri split, so sending one field doesn't wipe the others.
+  if (contri) {
+    for (const [k, v] of Object.entries(contri)) if (v !== undefined) $set[`contri.${k}`] = v;
+  }
   if (notificationPreferences) {
     for (const [k, v] of Object.entries(notificationPreferences)) {
       if (v !== undefined) $set[`notificationPreferences.${k}`] = v;
@@ -370,6 +376,19 @@ async function onCompleted(event: EventLean, actorId: string) {
 
 export async function setEventStatus(id: string, status: EventStatus, actorId: string, actor?: EventActor) {
   return updateEvent(id, { status }, actorId, actor);
+}
+
+/**
+ * Contri split for a party page. Computed from the full record (participant emails, host email)
+ * so public pages get the same numbers without exposing those emails.
+ */
+export async function getEventContriSplit(id: string, opts: { admin: boolean }) {
+  await connectDB();
+  const _id = assertObjectId(id, "event id");
+  const event = await PartyEvent.findOne(opts.admin ? { _id } : { _id, publicVisibility: true }).lean();
+  if (!event || event.category !== "contri" || event.status === "cancelled") return null;
+  const host = event.organizerEmail ? await User.findOne({ email: event.organizerEmail }).select({ upiId: 1 }).lean() : null;
+  return computeContriSplit(event, host?.upiId);
 }
 
 export const APPROVAL_REQUEST_COOLDOWN_MS = 60 * 60 * 1000;

@@ -17,6 +17,7 @@ export type ProfileData = {
   phone?: string;
   department?: string;
   designation?: string;
+  upiId?: string;
   birthday?: string | null;
   joinedOn?: string | null;
   occasions?: { personName: string; relation: string; occasion: string; label?: string; date: string }[];
@@ -30,6 +31,7 @@ export function ProfileForm({ profile }: { profile: ProfileData }) {
     phone: profile.phone ?? "",
     department: profile.department ?? "",
     designation: profile.designation ?? "",
+    upiId: profile.upiId ?? "",
     birthday: toDateInput(profile.birthday),
     joinedOn: toDateInput(profile.joinedOn),
   });
@@ -71,6 +73,7 @@ export function ProfileForm({ profile }: { profile: ProfileData }) {
           <div className="space-y-1.5"><Label htmlFor="p-phone">Phone</Label><Input id="p-phone" type="tel" maxLength={30} value={v.phone} onChange={(e) => set("phone", e.target.value)} /></div>
           <div className="space-y-1.5"><Label htmlFor="p-designation">Designation</Label><Input id="p-designation" maxLength={100} value={v.designation} onChange={(e) => set("designation", e.target.value)} /></div>
           <div className="space-y-1.5"><Label htmlFor="p-department">Department</Label><Input id="p-department" maxLength={100} value={v.department} onChange={(e) => set("department", e.target.value)} /></div>
+          <div className="space-y-1.5"><Label htmlFor="p-upi">UPI ID</Label><Input id="p-upi" maxLength={100} autoComplete="off" placeholder="name@okhdfcbank" value={v.upiId} onChange={(e) => set("upiId", e.target.value.trim())} /><p className="text-xs text-muted-foreground">For contri parties you host: everyone gets a QR to pay you back.</p></div>
           <div className="space-y-1.5"><Label htmlFor="p-joined">Joined on</Label><Input id="p-joined" type="date" value={v.joinedOn} onChange={(e) => set("joinedOn", e.target.value)} /></div>
           <div className="space-y-1.5"><Label htmlFor="p-birthday">Birthday</Label><Input id="p-birthday" type="date" value={v.birthday} onChange={(e) => set("birthday", e.target.value)} /></div>
           <div className="sm:col-span-2">

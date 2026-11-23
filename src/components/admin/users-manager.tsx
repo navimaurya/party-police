@@ -63,6 +63,7 @@ export type UserRow = {
   phone?: string;
   department?: string;
   designation?: string;
+  upiId?: string;
   birthday?: string | null;
   joinedOn?: string | null;
   notes?: string;
@@ -103,6 +104,7 @@ const emptyForm = () => ({
   phone: "",
   department: "",
   designation: "",
+  upiId: "",
   birthday: "",
   joinedOn: "",
   notes: "",
@@ -168,6 +170,7 @@ export function UsersManager({
       phone: u.phone ?? "",
       department: u.department ?? "",
       designation: u.designation ?? "",
+      upiId: u.upiId ?? "",
       birthday: toDateInput(u.birthday),
       joinedOn: toDateInput(u.joinedOn),
       notes: u.notes ?? "",
@@ -443,6 +446,9 @@ export function UsersManager({
                 </Field>
                 <Field id="u-department" label="Department">
                   <Input id="u-department" maxLength={100} value={form.department} onChange={(e) => set("department", e.target.value)} />
+                </Field>
+                <Field id="u-upi" label="UPI ID" hint="For contri parties they host: others scan a QR to pay them back.">
+                  <Input id="u-upi" maxLength={100} autoComplete="off" placeholder="name@okhdfcbank" value={form.upiId} onChange={(e) => set("upiId", e.target.value.trim())} />
                 </Field>
                 {!editing && isSuper(viewer) && (
                   <Field id="u-password" label="One-time password (optional)" className="sm:col-span-2" hint="Leave empty to email them their username and a generated one-time password. Either way they choose their own after the first sign-in.">

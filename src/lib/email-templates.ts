@@ -133,7 +133,7 @@ const appUrl = () => env().APP_URL;
 const eventUrl = (e: EventLike) => `${appUrl()}/parties/${String(e._id)}`;
 const adminEventUrl = (e: EventLike) => `${appUrl()}/admin/parties/${String(e._id)}`;
 
-export type Rendered = { subject: string; html: string; text: string };
+export type Rendered = { subject: string; html: string; text: string; attachments?: import("@/lib/email").EmailAttachment[] };
 
 const textSignoff = (signoff = "The Official Party Committee 🥳") => ["", "Regards,", signoff].join("\n");
 
@@ -288,6 +288,130 @@ export function eventCancelledEmail(e: EventLike): Rendered {
     cta: { label: "View details", url: eventUrl(e) },
   });
   return { subject, html, text: `${subject}\nThe Party Committee never forgets. 📒\n${eventUrl(e)}${textSignoff()}` };
+}
+
+/* ------------------------------ contri parties ----------------------------- */
+
+/** The split shown in contri emails (see lib/contri.ts). */
+export type ContriSplitLike = { total: number; headcount: number; perHead: number; payers: number; upiId: string; upiLink: string | null };
+
+export const CONTRI_QR_CID = "contri-upi-qr";
+
+const rupees = (n: number) =>
+  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 }).format(n);
+
+/** Big "pay ₹X" card with the QR (attached inline as cid:CONTRI_QR_CID) or the fallback text. */
+function contriPayCard(e: EventLike, s: ContriSplitLike, hasQr: boolean) {
+  if (!s.upiId) {
+    return callout(`Each person owes <strong>${escapeHtml(rupees(s.perHead))}</strong>. ${escapeHtml(e.organizerName)} hasn't added a UPI ID yet, so pay them the old-fashioned way (or ask for their UPI ID). 💸`);
+  }
+  const qr = hasQr
+    ? `<img src="cid:${CONTRI_QR_CID}" width="200" height="200" alt="UPI QR code to pay ${escapeHtml(rupees(s.perHead))} to ${escapeHtml(e.organizerName)}" style="display:block;margin:0 auto 10px;border:0;border-radius:12px">`
+    : "";
+  const button = s.upiLink
+    ? `<a href="${escapeHtml(s.upiLink)}" style="display:inline-block;margin-top:8px;padding:10px 20px;border-radius:999px;background:${C.violet};font:600 14px ${BODY_FONT};color:#ffffff;text-decoration:none">Pay ${escapeHtml(rupees(s.perHead))} in a UPI app</a>`
+    : "";
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:22px">
+<tr><td align="center" style="padding:20px 18px;font:400 14px/1.6 ${BODY_FONT};color:#4c1d95">
+<p style="margin:0 0 4px;font:600 13px ${BODY_FONT};letter-spacing:.06em;text-transform:uppercase">Your share</p>
+<p style="margin:0 0 14px;font:700 34px/1.1 ${HEADING_FONT};color:${C.ink}">${escapeHtml(rupees(s.perHead))}</p>
+${qr}
+<p style="margin:0">Scan with any UPI app (GPay, PhonePe, Paytm, BHIM…) to pay <strong>${escapeHtml(e.organizerName)}</strong>.</p>
+<p style="margin:4px 0 0;font-size:13px">UPI ID: <strong>${escapeHtml(s.upiId)}</strong></p>
+${button}
+</td></tr></table>`;
+}
+
+/**
+ * Thank-you for a CONTRI party: everyone paid, so everyone thanks... themselves.
+ * Carries the split and a UPI QR for each person's share.
+ */
+export function contriThankYouEmail(e: EventLike, s: ContriSplitLike, bills: { name: string; url: string }[], qrPng?: Buffer | null): Rendered {
+  const subject = `🤝 Thank you... to yourself! ${e.title} is settled (almost)`;
+  const billsHtml = bills.length
+    ? `<p style="margin:18px 0 6px;font:600 16px ${HEADING_FONT}">🧾 Proof the money was spent on food</p><ul style="margin:0;padding-left:20px">${bills
+        .map((b) => `<li style="margin:4px 0"><a href="${escapeHtml(b.url)}" style="color:${C.primary}">${escapeHtml(b.name)}</a></li>`)
+        .join("")}</ul>`
+    : "";
+  const html = layout({
+    eyebrow: "Contri party completed",
+    title: "Thank you... to yourself! 🫵🎉",
+    preheader: `Your share for ${e.title}: ${rupees(s.perHead)}. Pay ${e.organizerName} back.`,
+    body:
+      p("Hey Everyone!") +
+      p(`${strong(e.title)} was a contri party, which means <strong>nobody</strong> was generous. Everyone was. Equally. To the paisa. 🧮`) +
+      p("So this year's award for the Most Generous Party Giver goes to... <strong>you!</strong> 🏆 Please turn to the mirror and say <em>\"Thank you, I really shouldn't have.\"</em> Pat yourself on the back. Twice if you had seconds.") +
+      p(`Special mention to ${strong(e.organizerName)}, who fronted the bill and is now <em>very</em> interested in your UPI app. 👀`) +
+      details([
+        ["🧾 Total bill", rupees(s.total)],
+        ["👥 Split between", `${s.headcount} people`],
+        ["💸 Your share", rupees(s.perHead)],
+        ["📅 Date", fmtDate(e.eventDate)],
+        ["💳 Pay to", s.upiId ? `${e.organizerName} (${s.upiId})` : e.organizerName],
+      ]) +
+      contriPayCard(e, s, !!qrPng) +
+      p(`${escapeHtml(e.organizerName)}: you're the host, so you don't pay yourself. Sit back and watch the notifications roll in. 📲`) +
+      billsHtml +
+      p("Remember: friendships end over unpaid contri. Pay today. 😇"),
+    cta: { label: "View party & QR", url: eventUrl(e) },
+  });
+  const text = [
+    "Hey Everyone!",
+    "",
+    `${e.title} was a contri party: nobody was generous, everyone was. Equally. So thank you... to yourself! 🏆`,
+    `Special mention to ${e.organizerName}, who fronted the bill and is waiting for your payment. 👀`,
+    "",
+    `Total bill: ${rupees(s.total)}`,
+    `Split between: ${s.headcount} people`,
+    `Your share: ${rupees(s.perHead)}`,
+    s.upiId ? `Pay to: ${e.organizerName} (UPI: ${s.upiId})` : `Pay to: ${e.organizerName}`,
+    ...(s.upiLink ? [`UPI link: ${s.upiLink}`] : []),
+    ...(bills.length ? ["", "Bills:", ...bills.map((b) => `- ${b.name}: ${b.url}`)] : []),
+    "",
+    `Party page (with the QR): ${eventUrl(e)}`,
+    textSignoff(),
+  ].join("\n");
+  return {
+    subject,
+    html,
+    text,
+    attachments: qrPng ? [{ filename: "pay-your-share.png", content: qrPng, contentType: "image/png", cid: CONTRI_QR_CID }] : undefined,
+  };
+}
+
+/** After approval of a contri party: the host gets thanks for fronting the bill, not for "the treat". */
+export function contriHostThanksEmail(e: EventLike, subject: string, s: ContriSplitLike | null): Rendered {
+  const html = layout({
+    eyebrow: "Contri party approved ✅",
+    title: `Thanks for fronting the bill, ${e.organizerName}! 🧾`,
+    preheader: "Everyone has been sent their share and your UPI QR.",
+    body:
+      p(`Hi ${escapeHtml(e.organizerName)},`) +
+      p(`The Party Committee confirms ${strong(e.title)} happened. Since it was a contri party, nobody owes you a thank-you for the treat... but everyone owes you <strong>money</strong>. 😄`) +
+      (s
+        ? details([
+            ["🧾 Total bill", rupees(s.total)],
+            ["👥 Split between", `${s.headcount} people (you included)`],
+            ["💸 Each pays you", rupees(s.perHead)],
+            ["💰 You should get back", rupees(Math.round(s.perHead * s.payers * 100) / 100)],
+          ])
+        : "") +
+      (s?.upiId
+        ? p(`Everyone gets a QR code for their share that pays <strong>${escapeHtml(s.upiId)}</strong>.`)
+        : callout("Add your UPI ID on <strong>My profile</strong> (or on the party) so the team can scan a QR and pay you back.")),
+    cta: { label: "See the party page", url: eventUrl(e) },
+    signoff: "Your Team, via Party Police 🥳",
+  });
+  const text = [
+    `Hi ${e.organizerName},`,
+    "",
+    `${e.title} is approved. It was a contri party, so everyone owes you their share${s ? ` of ${rupees(s.perHead)}` : ""}.`,
+    s?.upiId ? `They've been sent a QR that pays ${s.upiId}.` : "Add your UPI ID on My profile so everyone can pay you by QR.",
+    "",
+    eventUrl(e),
+    textSignoff("Your Team, via Party Police 🥳"),
+  ].join("\n");
+  return { subject: subject.startsWith("Re: ") ? subject : `Re: ${subject}`, html, text };
 }
 
 /* --------------------------- party-day emails ---------------------------- */

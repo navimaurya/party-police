@@ -6,12 +6,14 @@ const CATEGORY_STYLE: Record<EventCategory, string> = {
   monthly: "bg-pink-100 text-pink-700 border-pink-200",
   special: "bg-violet-100 text-violet-700 border-violet-200",
   occasional: "bg-amber-100 text-amber-800 border-amber-200",
+  contri: "bg-teal-100 text-teal-800 border-teal-200",
 };
 
 export const CATEGORY_DOT: Record<EventCategory, string> = {
   monthly: "bg-pink-500",
   special: "bg-violet-500",
   occasional: "bg-amber-500",
+  contri: "bg-teal-500",
 };
 
 export function CategoryBadge({ category, className }: { category: EventCategory; className?: string }) {

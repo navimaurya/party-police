@@ -20,6 +20,8 @@ export type EventFormValue = {
   eventDate?: string;
   participants: { name: string; email?: string | null }[];
   budget?: number | null;
+  /** Contri party split (category "contri"). */
+  contri?: { totalAmount?: number | null; splitCount?: number | null; upiId?: string | null } | null;
   currency?: string;
   status: EventStatus;
   publicVisibility: boolean;
@@ -40,6 +42,7 @@ export function toFormValue(e: Partial<Omit<EventFormValue, "participants">> & {
     eventDate: e.eventDate ? dayKey(e.eventDate) : "",
     participants: e.participants ?? [],
     budget: e.budget ?? null,
+    contri: { totalAmount: e.contri?.totalAmount ?? null, splitCount: e.contri?.splitCount ?? null, upiId: e.contri?.upiId ?? "" },
     currency: e.currency ?? "INR",
     status: e.status ?? "upcoming",
     publicVisibility: e.publicVisibility ?? true,

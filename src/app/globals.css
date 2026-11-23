@@ -144,4 +144,5 @@
   .cat-monthly { --cat: oklch(0.63 0.22 355); }
   .cat-special { --cat: oklch(0.6 0.18 290); }
   .cat-occasional { --cat: oklch(0.7 0.16 60); }
+  .cat-contri { --cat: oklch(0.6 0.11 185); }
 }

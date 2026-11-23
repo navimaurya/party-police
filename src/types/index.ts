@@ -1,4 +1,4 @@
-export const EVENT_CATEGORIES = ["monthly", "special", "occasional"] as const;
+export const EVENT_CATEGORIES = ["monthly", "special", "occasional", "contri"] as const;
 export type EventCategory = (typeof EVENT_CATEGORIES)[number];
 
 export const EVENT_TYPES = ["scheduled", "instant"] as const;
@@ -45,12 +45,14 @@ export const CATEGORY_LABELS: Record<EventCategory, string> = {
   monthly: "Monthly Party",
   special: "Special Personal Event",
   occasional: "Occasional Party",
+  contri: "Contri Party",
 };
 
 export const CATEGORY_EMOJI: Record<EventCategory, string> = {
   monthly: "🍕",
   special: "🎂",
   occasional: "🎊",
+  contri: "🤝",
 };
 
 export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
@@ -117,6 +119,8 @@ export const SPECIAL_OCCASIONS = [
   "Personal achievement",
   "Other",
 ] as const;
+
+export const CONTRI_OCCASIONS = ["Team lunch", "Team dinner", "Cake for someone", "Gift for someone", "Outing", "Pizza Friday"] as const;
 
 export const OCCASIONAL_OCCASIONS = [
   "Festival",

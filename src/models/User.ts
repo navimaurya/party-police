@@ -39,6 +39,8 @@ const UserSchema = new Schema(
     phone: { type: String, trim: true, maxlength: 30, default: "" },
     department: { type: String, trim: true, maxlength: 100, default: "" },
     designation: { type: String, trim: true, maxlength: 100, default: "" },
+    /** For contri parties they host: others scan a QR to pay them back. */
+    upiId: { type: String, trim: true, maxlength: 100, default: "" },
     birthday: { type: Date, default: null },
     joinedOn: { type: Date, default: null },
     notes: { type: String, trim: true, maxlength: 1000, default: "" },

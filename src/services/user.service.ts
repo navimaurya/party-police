@@ -113,10 +113,10 @@ export async function getUser(id: string) {
   return user;
 }
 
-/** Active users of every role: party-giver picker and party-email recipients. */
+/** Active users of every role: party-giver picker (with UPI ID for contri parties) and party-email recipients. */
 export async function listActiveUsers() {
   await connectDB();
-  return User.find({ isActive: true }).sort({ name: 1 }).select({ name: 1, email: 1, role: 1 }).lean();
+  return User.find({ isActive: true }).sort({ name: 1 }).select({ name: 1, email: 1, role: 1, upiId: 1 }).lean();
 }
 
 export async function activeUserEmails() {

@@ -34,6 +34,19 @@ export const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
  */
 const eventDateInput = z.union([z.string().regex(DAY_KEY_RE, "Invalid date"), isoDate]);
 
+/** UPI virtual payment address, e.g. "ravi.k@okhdfcbank". "" clears it. */
+export const UPI_ID_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9.-]{1,63}$/;
+const upiId = z.union([z.string().trim().regex(UPI_ID_RE, "Enter a valid UPI ID, like name@okhdfcbank"), z.literal("")]);
+
+/** Contri party split. `null` clears a value. */
+export const ContriSchema = z
+  .object({
+    totalAmount: z.number().nonnegative().max(100_000_000).nullable().optional(),
+    splitCount: z.number().int().min(1).max(10_000).nullable().optional(),
+    upiId: upiId.optional(),
+  })
+  .strict();
+
 export const objectIdString = z.string().regex(/^[a-f\d]{24}$/i, "Invalid id");
 
 export const LoginSchema = z.object({
@@ -70,6 +83,7 @@ const eventBase = {
   eventDate: eventDateInput.optional(),
   participants: z.array(ParticipantSchema).max(500).default([]),
   budget: z.number().nonnegative().max(100_000_000).nullable().optional(),
+  contri: ContriSchema.optional(),
   currency: z.string().length(3).toUpperCase().default("INR"),
   notificationPreferences: NotificationPrefsSchema.optional(),
   publicVisibility: z.boolean().default(true),
@@ -97,6 +111,7 @@ export const UpdateEventSchema = z
     eventDate: eventDateInput.optional(),
     participants: z.array(ParticipantSchema).max(500).optional(),
     budget: eventBase.budget,
+    contri: ContriSchema.optional(),
     currency: z.string().length(3).toUpperCase().optional(),
     status: z.enum(EVENT_STATUSES).optional(),
     notificationPreferences: NotificationPrefsSchema.partial().optional(),
@@ -318,6 +333,7 @@ const profileFields = {
   phone: trimmed(30).optional(),
   department: trimmed(100).optional(),
   designation: trimmed(100).optional(),
+  upiId: upiId.optional(),
   birthday: nullableDate,
   joinedOn: nullableDate,
   /** Relatives' (and other) occasions. Replaces the whole list when sent. */

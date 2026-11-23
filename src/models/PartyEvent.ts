@@ -22,6 +22,18 @@ const PartyEventSchema = new Schema(
     eventDate: { type: Date, required: true },
     participants: { type: [ParticipantSchema], default: [] },
     budget: { type: Number, min: 0, default: null },
+    /**
+     * Contri party: the host paid the bill, everyone splits it and pays the host back.
+     * Only used when category is "contri".
+     */
+    contri: {
+      /** What the host actually paid. Falls back to `budget` when empty. */
+      totalAmount: { type: Number, min: 0, default: null },
+      /** People splitting the bill (host included). Empty = participants + host. */
+      splitCount: { type: Number, min: 1, default: null },
+      /** Host's UPI ID for this party. Empty = the host's UPI ID from their profile. */
+      upiId: { type: String, trim: true, maxlength: 100, default: "" },
+    },
     currency: { type: String, default: "INR", maxlength: 3 },
     status: { type: String, enum: EVENT_STATUSES, default: "upcoming" },
     completedAt: { type: Date, default: null },
