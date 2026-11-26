@@ -11,7 +11,11 @@ import {
   NOTIFICATION_TYPES,
   OCCASION_TYPES,
   RELATIONS,
+  MONEY_ROLES,
+  PAYMENT_METHODS,
+  PAYMENT_MODELS,
 } from "@/types";
+import { isWholePaise } from "@/lib/payments";
 
 const trimmed = (max: number) => z.string().trim().max(max);
 /** "" or null clears the value; omitted leaves it unchanged. */
@@ -84,6 +88,7 @@ const eventBase = {
   participants: z.array(ParticipantSchema).max(500).default([]),
   budget: z.number().nonnegative().max(100_000_000).nullable().optional(),
   contri: ContriSchema.optional(),
+  paymentModel: z.enum(PAYMENT_MODELS).default("standard"),
   currency: z.string().length(3).toUpperCase().default("INR"),
   notificationPreferences: NotificationPrefsSchema.optional(),
   publicVisibility: z.boolean().default(true),
@@ -112,6 +117,7 @@ export const UpdateEventSchema = z
     participants: z.array(ParticipantSchema).max(500).optional(),
     budget: eventBase.budget,
     contri: ContriSchema.optional(),
+    paymentModel: z.enum(PAYMENT_MODELS).optional(),
     currency: z.string().length(3).toUpperCase().optional(),
     status: z.enum(EVENT_STATUSES).optional(),
     notificationPreferences: NotificationPrefsSchema.partial().optional(),
@@ -391,3 +397,71 @@ export const ChangePasswordSchema = z
   .object({ currentPassword: z.string().min(1).max(200), newPassword: password })
   .strict()
   .refine((v) => v.currentPassword !== v.newPassword, { path: ["newPassword"], message: "Choose a different password" });
+
+/* ----------------------------- party payments ----------------------------- */
+
+/** A money amount in rupees: positive, at most 2 decimals. Converted to paise by the service. */
+const rupees = z
+  .number({ error: "Enter an amount" })
+  .positive("Amount must be more than ₹0")
+  .max(100_000_000)
+  .refine(isWholePaise, "Amounts can have at most 2 decimals");
+/** "yyyy-MM-dd" due day; "" or null clears it. */
+const dueDay = z.union([z.string().regex(DAY_KEY_RE, "Invalid date"), z.literal(""), z.null()]).optional();
+
+export const MoneyRoleCreateSchema = z
+  .object({
+    role: z.enum(MONEY_ROLES),
+    name: trimmed(100).min(1, "Name is required"),
+    email: optionalEmail,
+    upiId: upiId.optional(),
+    /** Lenders: how much they provide (or promised to provide). */
+    expectedAmount: rupees.optional(),
+    /** Lenders: who receives their money (a provider), null = the party giver. */
+    payeeRoleId: objectIdString.nullable().optional(),
+    dueDate: dueDay,
+  })
+  .strict()
+  .refine((v) => v.role !== "lender" || v.expectedAmount !== undefined, { path: ["expectedAmount"], message: "How much is this lender providing?" });
+
+export const MoneyRoleUpdateSchema = z
+  .object({ name: trimmed(100).min(1).optional(), email: optionalEmail, upiId: upiId.optional() })
+  .strict();
+
+export const PaymentCreateSchema = z
+  .object({
+    /** Lend records are created with their lender (MoneyRoleCreateSchema). */
+    kind: z.enum(["share", "other"]).default("share"),
+    payerName: trimmed(100).min(1, "Who pays?"),
+    payerEmail: optionalEmail,
+    amount: rupees,
+    payeeRoleId: objectIdString.nullable().optional(),
+    dueDate: dueDay,
+    note: trimmed(300).default(""),
+  })
+  .strict();
+
+export const PaymentUpdateSchema = z
+  .object({
+    payerName: trimmed(100).min(1).optional(),
+    payerEmail: optionalEmail,
+    amount: rupees.optional(),
+    payeeRoleId: objectIdString.nullable().optional(),
+    dueDate: dueDay,
+    note: trimmed(300).optional(),
+  })
+  .strict();
+
+/** "Mark as paid". Without `amount`, the whole remaining due is recorded. */
+export const PaymentRecordSchema = z
+  .object({
+    amount: rupees.optional(),
+    method: z.enum(PAYMENT_METHODS).default("upi"),
+    reference: trimmed(100).default(""),
+    note: trimmed(300).default(""),
+    paidOn: z.string().regex(DAY_KEY_RE, "Invalid date").optional(),
+    idempotencyKey: z.string().trim().min(8).max(100).regex(/^[\w-]+$/, "Invalid key"),
+  })
+  .strict();
+
+export const VoidTransactionSchema = z.object({ reason: trimmed(300).min(1, "Say why this payment is being voided") }).strict();

@@ -1,5 +1,5 @@
 import { Schema, model, models, type InferSchemaType, type Model } from "mongoose";
-import { EVENT_CATEGORIES, EVENT_STATUSES, EVENT_TYPES } from "@/types";
+import { EVENT_CATEGORIES, EVENT_STATUSES, EVENT_TYPES, PAYMENT_MODELS } from "@/types";
 
 const ParticipantSchema = new Schema(
   {
@@ -34,6 +34,12 @@ const PartyEventSchema = new Schema(
       /** Host's UPI ID for this party. Empty = the host's UPI ID from their profile. */
       upiId: { type: String, trim: true, maxlength: 100, default: "" },
     },
+    /**
+     * How the party is paid for. "standard" = the existing behaviour (contri parties keep the
+     * contri split); "lender_provider" = lenders and providers, tracked in PartyPayment.
+     * Missing on older parties = "standard".
+     */
+    paymentModel: { type: String, enum: PAYMENT_MODELS, default: "standard" },
     currency: { type: String, default: "INR", maxlength: 3 },
     status: { type: String, enum: EVENT_STATUSES, default: "upcoming" },
     completedAt: { type: Date, default: null },

@@ -22,6 +22,8 @@ import {
   EVENT_CATEGORIES,
   OCCASIONAL_OCCASIONS,
   SPECIAL_OCCASIONS,
+  PAYMENT_MODEL_LABELS,
+  PAYMENT_MODELS,
   isAdminRole,
   isPartyManager,
   type EventCategory,
@@ -108,6 +110,8 @@ export function EventForm({
       location: v.location ?? "",
       participants: participants.map((p) => ({ name: p.name, email: p.email || "" })),
       budget: v.budget ?? null,
+      // Contri parties always use the contri split (lenders & providers are a separate model).
+      paymentModel: v.category === "contri" ? "standard" : (v.paymentModel ?? "standard"),
       ...(v.category === "contri" ? { contri: { totalAmount: contri.totalAmount ?? null, splitCount: contri.splitCount ?? null, upiId: (contri.upiId ?? "").trim() } } : {}),
       currency: v.currency || "INR",
       status: v.status,
@@ -290,6 +294,36 @@ export function EventForm({
           </p>
         </fieldset>
       )}
+
+      <fieldset className="space-y-3 rounded-2xl border p-4">
+        <legend className="px-1 text-sm font-semibold">💰 Payment model</legend>
+        <div className="inline-flex flex-wrap rounded-xl border p-1" role="radiogroup" aria-label="Payment model">
+          {PAYMENT_MODELS.map((m) => {
+            const disabled = m === "lender_provider" && v.category === "contri";
+            const active = (v.category === "contri" ? "standard" : (v.paymentModel ?? "standard")) === m;
+            return (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                disabled={disabled}
+                onClick={() => set("paymentModel", m)}
+                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+              >
+                {PAYMENT_MODEL_LABELS[m]}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {v.category === "contri"
+            ? "Contri parties use the contri split above. Pick another category to use lenders & providers."
+            : (v.paymentModel ?? "standard") === "lender_provider"
+              ? "Lenders front the money; providers collect it back. Add them, and each person's share, in the Payments section of the party page once it's saved."
+              : "The usual flow. You can still assign individual shares and track payments on the party page."}
+        </p>
+      </fieldset>
 
       <fieldset className="space-y-3 rounded-2xl border p-4">
         <legend className="px-1 text-sm font-semibold">Visibility & notifications</legend>

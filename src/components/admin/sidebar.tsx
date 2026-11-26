@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Banknote,
   Bell,
   CalendarDays,
   CalendarHeart,
@@ -38,6 +39,7 @@ const NAV = [
   { href: "/admin/special", label: "Special Personal Events", icon: Cake },
   { href: "/admin/occasional", label: "Occasional Parties", icon: Sparkles },
   { href: "/admin/contri", label: "Contri Parties", icon: HandCoins },
+  { href: "/admin/payments", label: "My Payments", icon: Banknote },
   { href: "/admin/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/admin/occasions", label: "Occasions", icon: CalendarHeart },
   { href: "/admin/users", label: "Users", icon: Users },
@@ -53,7 +55,7 @@ const NAV = [
 ];
 
 /** Pages each role can open (the server enforces the same rules on every page and API). */
-const MEMBER_NAV = new Set(["/admin/parties", "/admin/calendar", "/admin/occasions"]);
+const MEMBER_NAV = new Set(["/admin/parties", "/admin/payments", "/admin/calendar", "/admin/occasions"]);
 const MANAGER_NAV = new Set([...MEMBER_NAV, "/admin/monthly", "/admin/special", "/admin/occasional", "/admin/contri"]);
 export type NavRole = "super_admin" | "admin" | "manager" | "member";
 

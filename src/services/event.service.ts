@@ -16,6 +16,7 @@ import { isAdminRole, isPartyManager, type EventStatus, type UserRole } from "@/
 import { enforceBudget } from "./budget.service";
 import { audit } from "./audit.service";
 import { giverThanksKey } from "./notification.service";
+import { assertPaymentModelChange, deleteEventPayments, paymentModelOf } from "./payment.service";
 
 /**
  * "Party added" and "party changed" emails wait this long, so edits made right after
@@ -126,6 +127,7 @@ export async function createEvent(input: CreateInput, actorId: string, actor?: E
   await connectDB();
   const { budgetOverride, eventDate: rawDate, ...data } = input;
   if (actor) assertCanCreate(data, !!budgetOverride, actor);
+  await assertPaymentModelChange({ category: data.category, next: data.paymentModel });
   const eventDate = resolveEventDate(rawDate) ?? new Date();
   const _id = new Types.ObjectId();
   const { overridden } = await enforceBudget({
@@ -205,6 +207,14 @@ export async function updateEvent(id: string, input: UpdateInput, actorId: strin
   const { budgetOverride, notificationPreferences, eventDate: rawDate, ...rest } = input;
   if (actor) assertCanEdit(before, rest, !!budgetOverride, actor);
   const nextDate = resolveEventDate(rawDate);
+  if (rest.paymentModel !== undefined || rest.category !== undefined) {
+    await assertPaymentModelChange({
+      eventId: _id,
+      category: rest.category ?? before.category,
+      before: paymentModelOf(before),
+      next: rest.paymentModel ?? paymentModelOf(before),
+    });
+  }
 
   const nextCategory = rest.category ?? before.category;
   const nextBudget = rest.budget !== undefined ? rest.budget : before.budget;
@@ -434,6 +444,7 @@ export async function deleteEvent(id: string, actorId: string) {
   const bills = await PartyBill.find({ eventId: _id }).select("+storageKey").lean();
   await PartyEvent.deleteOne({ _id });
   await PartyBill.deleteMany({ eventId: _id });
+  await deleteEventPayments(_id);
   await PartyCommitment.updateMany({ relatedEventId: _id }, { $set: { relatedEventId: null } });
   // Physical cleanup after the records are gone; failures are logged, not fatal.
   for (const b of bills) {

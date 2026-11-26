@@ -137,3 +137,55 @@ export type ApiFailure = { success: false; error: { code: string; message: strin
 export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
 
 export type PaginationMeta = { page: number; limit: number; total: number; totalPages: number };
+
+/* ------------------------------ party payments ------------------------------ */
+
+/**
+ * How a party is paid for.
+ * - standard: the existing behaviour (the giver pays; contri parties use the contri split).
+ * - lender_provider: lenders front the money, providers collect it back; tracked per obligation.
+ */
+export const PAYMENT_MODELS = ["standard", "lender_provider"] as const;
+export type PaymentModel = (typeof PAYMENT_MODELS)[number];
+export const PAYMENT_MODEL_LABELS: Record<PaymentModel, string> = {
+  standard: "Standard / contribution",
+  lender_provider: "Lenders & providers",
+};
+
+/** People with a money job on a lender/provider party. */
+export const MONEY_ROLES = ["lender", "provider"] as const;
+export type MoneyRole = (typeof MONEY_ROLES)[number];
+export const MONEY_ROLE_LABELS: Record<MoneyRole, string> = { lender: "Lender", provider: "Provider (collector)" };
+
+/**
+ * One payment obligation.
+ * - share: a participant's assigned share;
+ * - lend:  what a lender provides (or promised to provide) for the party;
+ * - other: any other money someone owes on this party (e.g. a provider settling with a lender).
+ */
+export const PAYMENT_KINDS = ["share", "lend", "other"] as const;
+export type PaymentKind = (typeof PAYMENT_KINDS)[number];
+export const PAYMENT_KIND_LABELS: Record<PaymentKind, string> = { share: "Share", lend: "Money lent", other: "Other" };
+
+/** Stored status, derived from the amounts on every change. */
+export const PAYMENT_STATUSES = ["pending", "partially_paid", "paid"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+/** Shown status: "overdue" = not fully paid after the due date (computed when read). */
+export const PAYMENT_VIEW_STATUSES = [...PAYMENT_STATUSES, "overdue"] as const;
+export type PaymentViewStatus = (typeof PAYMENT_VIEW_STATUSES)[number];
+export const PAYMENT_STATUS_LABELS: Record<PaymentViewStatus, string> = {
+  pending: "Pending",
+  partially_paid: "Partially paid",
+  paid: "Paid",
+  overdue: "Overdue",
+};
+
+export const PAYMENT_METHODS = ["upi", "cash", "bank_transfer", "card", "other"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  upi: "UPI",
+  cash: "Cash",
+  bank_transfer: "Bank transfer",
+  card: "Card",
+  other: "Other",
+};

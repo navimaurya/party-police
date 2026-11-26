@@ -1,5 +1,5 @@
 import { dayKey } from "@/lib/time";
-import type { EventCategory, EventStatus, EventType } from "@/types";
+import type { EventCategory, EventStatus, EventType, PaymentModel } from "@/types";
 
 /**
  * Shape of the party form, plus the helper that builds it from an event.
@@ -22,6 +22,8 @@ export type EventFormValue = {
   budget?: number | null;
   /** Contri party split (category "contri"). */
   contri?: { totalAmount?: number | null; splitCount?: number | null; upiId?: string | null } | null;
+  /** How the party is paid for (lenders & providers, or the standard flow). */
+  paymentModel?: PaymentModel;
   currency?: string;
   status: EventStatus;
   publicVisibility: boolean;
@@ -43,6 +45,7 @@ export function toFormValue(e: Partial<Omit<EventFormValue, "participants">> & {
     participants: e.participants ?? [],
     budget: e.budget ?? null,
     contri: { totalAmount: e.contri?.totalAmount ?? null, splitCount: e.contri?.splitCount ?? null, upiId: e.contri?.upiId ?? "" },
+    paymentModel: e.paymentModel === "lender_provider" ? "lender_provider" : "standard",
     currency: e.currency ?? "INR",
     status: e.status ?? "upcoming",
     publicVisibility: e.publicVisibility ?? true,
