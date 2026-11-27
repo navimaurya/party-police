@@ -162,38 +162,47 @@ describe("lenders & providers", () => {
     await expect(updateEvent(eventId, UpdateEventSchema.parse({ category: "contri" }), boss.id)).rejects.toMatchObject({ status: 400 });
   });
 
-  it("tracks money lent vs collected vs due; providers record what they receive, and only that", async () => {
-    const { host, priya, ravi, eventId } = await setup({ paymentModel: "lender_provider" });
+  it("the party giver repays the money giver; shares can be paid straight to the money giver, who confirms what they receive", async () => {
+    const { boss, host, priya, ravi, eventId } = await setup({ paymentModel: "lender_provider" });
+    await User.updateOne({ email: "ravi@team.test" }, { $set: { upiId: "ravi@okicici" } });
     const provider = await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "provider", name: "Priya", email: "priya@team.test", upiId: "priya@ybl" }), host);
-    const lender = await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "Ravi", email: "ravi@team.test", expectedAmount: 3000, payeeRoleId: String(provider._id) }), host);
-    await expect(createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "Ravi", email: "ravi@team.test", expectedAmount: 1 }), host)).rejects.toMatchObject({ status: 409 });
+    const giver = await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "Ravi", email: "ravi@team.test", lentAmount: 3000, dueDate: "2099-01-01" }), host);
+    await expect(createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "Ravi", email: "ravi@team.test", lentAmount: 1 }), host)).rejects.toMatchObject({ status: 409 });
 
+    // The borrowed money: the party giver owes it to Ravi, and the QR pays Ravi's (profile) UPI ID.
     const lend = await PartyPayment.findOne({ eventId, kind: "lend" }).lean();
-    expect(lend).toMatchObject({ payerName: "Ravi", amountPaise: 300000 });
-    // The lender sees their own obligation, with a QR that pays the provider.
-    expect(await getPaymentUpiLink(eventId, String(lend!._id), ravi)).toContain("pa=priya%40ybl");
+    expect(lend).toMatchObject({ payerName: "Host", payerEmail: "host@team.test", amountPaise: 300000 });
+    expect(String(lend!.payeeRoleId)).toBe(String(giver._id));
+    expect(await getPaymentUpiLink(eventId, String(lend!._id), host)).toContain("pa=ravi%40okicici");
+    expect((await listMyPayments(host))[0].payments[0]).toMatchObject({ kind: "lend", isMine: true, due: 3000 });
 
-    const s1 = await createPayment(eventId, share("Asha", null, 1200, { payeeRoleId: String(provider._id) }), host);
-    const s2 = await createPayment(eventId, share("Dev", null, 800), host); // pays the giver
-    await recordPayment(eventId, String(lend!._id), pay(2000), priya); // provider received 2000 of the lent money
-    await recordPayment(eventId, String(s1!._id), pay(1200), priya);
-    await expect(recordPayment(eventId, String(s2!._id), pay(100), priya)).rejects.toMatchObject({ status: 403 });
+    const asha = await createPayment(eventId, share("Asha", null, 1200, { payeeRoleId: String(giver._id) }), host); // pays the money giver directly
+    const dev = await createPayment(eventId, share("Dev", null, 800, { payeeRoleId: String(provider._id) }), host);
+    expect(await getPaymentUpiLink(eventId, String(asha!._id), host)).toContain("pa=ravi%40okicici");
+
+    // Ravi confirms the money he received (repayment + Asha's share); not money that went to Priya.
+    await recordPayment(eventId, String(lend!._id), pay(2000), ravi);
+    await recordPayment(eventId, String(asha!._id), pay(1200), ravi);
+    await expect(recordPayment(eventId, String(dev!._id), pay(100), ravi)).rejects.toMatchObject({ status: 403 });
+    await expect(updatePayment(eventId, String(lend!._id), PaymentUpdateSchema.parse({ payeeRoleId: String(provider._id) }), host)).rejects.toMatchObject({ status: 400 });
 
     const { summary } = await getPartyPayments(eventId, host);
-    expect(summary).toMatchObject({ budget: 5000, assigned: 2000, collected: 1200, lent: 3000, lentProvided: 2000, lentDue: 1000, paid: 3200, outstanding: 1800 });
+    expect(summary).toMatchObject({ budget: 5000, assigned: 2000, collected: 1200, lent: 3000, lentRepaid: 2000, lentDue: 1000, paid: 3200, outstanding: 1800 });
     expect(summary.counts).toMatchObject({ all: 3, paid: 1, partially_paid: 1, pending: 1 });
-
-    // The provider's own view: what they collect.
-    const collect = await getPartyPayments(eventId, priya);
-    expect(collect.payments.filter((x) => x.canRecord).map((x) => x.payerName).sort()).toEqual(["Asha", "Ravi"]);
+    expect((await getPartyPayments(eventId, ravi)).payments.filter((x) => x.canRecord).map((x) => x.payerName).sort()).toEqual(["Asha", "Host"]);
+    expect((await getPartyPayments(eventId, priya)).payments.map((x) => x.payerName)).toEqual(["Dev"]);
 
     await expect(deleteMoneyRole(eventId, String(provider._id), host)).rejects.toMatchObject({ status: 409 });
-    await expect(deleteMoneyRole(eventId, String(lender._id), host)).rejects.toMatchObject({ status: 409 });
+    await expect(deleteMoneyRole(eventId, String(giver._id), host)).rejects.toMatchObject({ status: 409 });
+
+    // A new party giver takes over the repayment.
+    await updateEvent(eventId, UpdateEventSchema.parse({ organizerName: "Neha", organizerEmail: "neha@team.test" }), boss.id);
+    expect(await PartyPayment.findById(lend!._id).lean()).toMatchObject({ payerName: "Neha", payerEmail: "neha@team.test" });
   });
 
   it("deleting a party removes its payments, lenders and providers", async () => {
     const { boss, host, eventId } = await setup({ paymentModel: "lender_provider" });
-    await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "L", expectedAmount: 100 }), host);
+    await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "L", lentAmount: 100 }), host);
     await createPayment(eventId, share("A", null, 10), host);
     await deleteEvent(eventId, boss.id);
     expect(await PartyPayment.countDocuments({})).toBe(0);

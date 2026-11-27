@@ -30,6 +30,8 @@ import {
 } from "@/types";
 
 type Person = { name: string; email?: string | null };
+/** A signed-in team member (money givers and providers are usually picked from these). */
+export type PaymentMember = { name: string; email: string; upiId?: string };
 type Filter = PaymentViewStatus | "all";
 
 const STATUS_STYLE: Record<PaymentViewStatus, string> = {
@@ -45,11 +47,26 @@ export function PaymentStatusBadge({ status }: { status: PaymentViewStatus }) {
 
 const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 const num = (s: string) => (s.trim() === "" ? undefined : Number(s));
+const payeeLabel = (r: Pick<RoleView, "name" | "role">) => `${r.name} (${r.role === "lender" ? "money giver" : "provider"})`;
 
 /* ------------------------------- the panel -------------------------------- */
 
 /** Payments section of a party page: overview, lenders & providers, and every obligation. */
-export function PaymentsPanel({ data, people }: { data: PartyPaymentsData; people: Person[] }) {
+export function PaymentsPanel({ data, people, members = [] }: { data: PartyPaymentsData; people: Person[]; members?: PaymentMember[] }) {
+  const router = useRouter();
+  const [switching, setSwitching] = useState(false);
+  async function enableMoneyGivers() {
+    setSwitching(true);
+    try {
+      await api(`/api/events/${data.eventId}`, { method: "PATCH", json: { paymentModel: "lender_provider" } });
+      toast.success("Money givers & providers turned on");
+      router.refresh();
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setSwitching(false);
+    }
+  }
   const lenderModel = data.paymentModel === "lender_provider";
   const [shareDialog, setShareDialog] = useState<{ open: boolean; editing: PaymentView | null }>({ open: false, editing: null });
   const [roleDialog, setRoleDialog] = useState<{ open: boolean; editing: RoleView | null }>({ open: false, editing: null });
@@ -62,9 +79,10 @@ export function PaymentsPanel({ data, people }: { data: PartyPaymentsData; peopl
         <RolesSection eventId={data.eventId} roles={data.roles} onAdd={() => setRoleDialog({ open: true, editing: null })} onEdit={(r) => setRoleDialog({ open: true, editing: r })} />
       )}
       {data.canManage && !lenderModel && (
-        <p className="rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
-          Need lenders who front the money and providers who collect it? Set the party&apos;s <strong>Payment model</strong> to <strong>Lenders &amp; providers</strong> in the party details below.
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
+          <span>Did the party giver borrow money from someone? Add them as a <strong>money giver</strong>, so the giver (or the participants) can pay them back.</span>
+          <Button size="xs" variant="outline" disabled={switching} onClick={() => void enableMoneyGivers()}>{switching && <Loader2 className="animate-spin" />} Add a money giver</Button>
+        </div>
       )}
 
       <PaymentsTable
@@ -79,7 +97,7 @@ export function PaymentsPanel({ data, people }: { data: PartyPaymentsData; peopl
       {data.canManage && (
         <>
           <ShareDialog key={`s-${shareDialog.editing?._id ?? "new"}-${shareDialog.open}`} eventId={data.eventId} state={shareDialog} onClose={() => setShareDialog({ open: false, editing: null })} people={people} roles={data.roles} />
-          <RoleDialog key={`r-${roleDialog.editing?._id ?? "new"}-${roleDialog.open}`} eventId={data.eventId} state={roleDialog} onClose={() => setRoleDialog({ open: false, editing: null })} roles={data.roles} people={people} />
+          <RoleDialog key={`r-${roleDialog.editing?._id ?? "new"}-${roleDialog.open}`} eventId={data.eventId} state={roleDialog} onClose={() => setRoleDialog({ open: false, editing: null })} people={people} members={members} />
         </>
       )}
     </div>
@@ -91,14 +109,14 @@ function SummaryGrid({ s, lenderModel }: { s: PaymentSummary; lenderModel: boole
     { label: "Party budget", value: s.budget != null ? formatRupees(s.budget) : "—" },
     { label: "Assigned in shares", value: formatRupees(s.assigned) },
     { label: "Collected from shares", value: formatRupees(s.collected) },
-    ...(lenderModel || s.lent > 0 ? [{ label: "Lent / provided", value: `${formatRupees(s.lentProvided)} of ${formatRupees(s.lent)}`, hint: s.lentDue > 0 ? `${formatRupees(s.lentDue)} still to come` : undefined }] : []),
+    ...(lenderModel || s.lent > 0 ? [{ label: "Borrowed / repaid", value: `${formatRupees(s.lentRepaid)} of ${formatRupees(s.lent)}`, hint: s.lentDue > 0 ? `${formatRupees(s.lentDue)} still owed to money givers` : undefined }] : []),
     { label: "Total paid", value: formatRupees(s.paid) },
     { label: "Total outstanding", value: formatRupees(s.outstanding), tone: s.outstanding > 0 ? "text-red-700" : "text-emerald-700" },
   ];
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
       {tiles.map((t) => (
-        <div key={t.label} className="rounded-xl border bg-background p-3">
+        <div key={t.label} className="rounded-xl border bg-background p-2.5">
           <p className="text-xs text-muted-foreground">{t.label}</p>
           <p className={cn("mt-1 font-heading text-lg font-bold leading-tight", "tone" in t && t.tone)}>{t.value}</p>
           {"hint" in t && t.hint && <p className="text-xs text-amber-700">{t.hint}</p>}
@@ -125,13 +143,13 @@ function RolesSection({ eventId, roles, onAdd, onEdit }: { eventId: string; role
     <div className="space-y-2 rounded-2xl border p-4">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold">Lenders &amp; providers</h3>
-          <p className="text-xs text-muted-foreground">Lenders front money for the party. Providers collect payments; they can mark the payments they receive.</p>
+          <h3 className="text-sm font-semibold">Money givers &amp; providers</h3>
+          <p className="text-xs text-muted-foreground">Money givers lent the party giver money and get it back. Providers collect payments. Both can mark the payments they receive.</p>
         </div>
         <Button size="sm" variant="outline" onClick={onAdd}><Plus /> Add</Button>
       </div>
       {roles.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No lenders or providers yet.</p>
+        <p className="text-sm text-muted-foreground">No money givers or providers yet.</p>
       ) : (
         <ul className="divide-y">
           {roles.map((r) => (
@@ -147,7 +165,7 @@ function RolesSection({ eventId, roles, onAdd, onEdit }: { eventId: string; role
                 <ConfirmButton
                   trigger={<Button size="icon-sm" variant="ghost" className="text-destructive" aria-label={`Remove ${r.name}`}><Trash2 /></Button>}
                   title={`Remove ${r.name}?`}
-                  description={r.role === "lender" ? "Their money-lent record is removed too. Not possible once they've provided money." : "Not possible while payments go to them."}
+                  description={r.role === "lender" ? "The borrowed-money record is removed too. Not possible once repayments were recorded or while shares go to them." : "Not possible while payments go to them."}
                   confirmLabel="Remove"
                   onConfirm={() => remove(r)}
                 />
@@ -160,12 +178,13 @@ function RolesSection({ eventId, roles, onAdd, onEdit }: { eventId: string; role
   );
 }
 
-function RoleDialog({ eventId, state, onClose, roles, people }: { eventId: string; state: { open: boolean; editing: RoleView | null }; onClose: () => void; roles: RoleView[]; people: Person[] }) {
+function RoleDialog({ eventId, state, onClose, people, members }: { eventId: string; state: { open: boolean; editing: RoleView | null }; onClose: () => void; people: Person[]; members: PaymentMember[] }) {
   const router = useRouter();
   const r = state.editing;
-  const [f, setF] = useState({ role: (r?.role ?? "lender") as MoneyRole, name: r?.name ?? "", email: r?.email ?? "", upiId: r?.upiId ?? "", expectedAmount: "", payeeRoleId: "", dueDate: "" });
+  const [f, setF] = useState({ role: (r?.role ?? "lender") as MoneyRole, name: r?.name ?? "", email: r?.email ?? "", upiId: r?.upiId ?? "", lentAmount: "", dueDate: "" });
   const [busy, setBusy] = useState(false);
-  const providers = roles.filter((x) => x.role === "provider");
+  const picked = members.find((m) => m.email === f.email.toLowerCase());
+  const lender = f.role === "lender";
 
   async function save() {
     setBusy(true);
@@ -175,13 +194,7 @@ function RoleDialog({ eventId, state, onClose, roles, people }: { eventId: strin
       } else {
         await api(`/api/events/${eventId}/money-roles`, {
           method: "POST",
-          json: {
-            role: f.role,
-            name: f.name,
-            email: f.email,
-            upiId: f.upiId.trim(),
-            ...(f.role === "lender" ? { expectedAmount: num(f.expectedAmount), payeeRoleId: f.payeeRoleId || null, dueDate: f.dueDate || null } : {}),
-          },
+          json: { role: f.role, name: f.name, email: f.email, upiId: f.upiId.trim(), ...(lender ? { lentAmount: num(f.lentAmount), dueDate: f.dueDate || null } : {}) },
         });
       }
       toast.success(r ? "Saved" : `${f.name} added`);
@@ -198,47 +211,57 @@ function RoleDialog({ eventId, state, onClose, roles, people }: { eventId: strin
     <Dialog open={state.open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{r ? `Edit ${MONEY_ROLE_LABELS[r.role].toLowerCase()}` : "Add a lender or provider"}</DialogTitle>
-          <DialogDescription>{f.role === "lender" ? "Someone who lends or provides money for the party." : "Someone who receives payments from participants."}</DialogDescription>
+          <DialogTitle>{r ? `Edit ${MONEY_ROLE_LABELS[r.role].toLowerCase()}` : lender ? "Add a money giver" : "Add a provider"}</DialogTitle>
+          <DialogDescription>{lender ? "A team member the party giver borrowed money from. The giver (or the participants, via “Pays to”) pays them back." : "Someone who receives payments from participants."}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }}>
           {!r && (
             <div className="space-y-1 sm:col-span-2">
               <Label htmlFor="role-kind">Role</Label>
               <NativeSelect id="role-kind" value={f.role} onChange={(e) => setF({ ...f, role: e.target.value as MoneyRole })}>
-                <option value="lender">Lender: provides money</option>
+                <option value="lender">Money giver: lent the party giver money</option>
                 <option value="provider">Provider: collects payments</option>
               </NativeSelect>
             </div>
           )}
-          <PersonFields idPrefix="role" people={people} name={f.name} email={f.email} onChange={(name, email) => setF({ ...f, name, email })} />
+          {members.length > 0 && (
+            <div className="space-y-1 sm:col-span-2">
+              <Label htmlFor="role-user">{lender ? "Who gave the money?" : "Who collects?"}</Label>
+              <NativeSelect
+                id="role-user"
+                value={picked?.email ?? ""}
+                onChange={(e) => {
+                  const m = members.find((x) => x.email === e.target.value);
+                  setF(m ? { ...f, name: m.name, email: m.email } : { ...f, name: "", email: "" });
+                }}
+              >
+                <option value="">— Someone else (type below) —</option>
+                {members.map((m) => <option key={m.email} value={m.email}>{m.name} · {m.email}</option>)}
+              </NativeSelect>
+            </div>
+          )}
+          {!picked && <PersonFields idPrefix="role" people={people} name={f.name} email={f.email} onChange={(name, email) => setF({ ...f, name, email })} />}
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="role-upi">UPI ID</Label>
-            <Input id="role-upi" maxLength={100} autoComplete="off" placeholder="Empty = the UPI ID on their profile" value={f.upiId} onChange={(e) => setF({ ...f, upiId: e.target.value })} />
+            <Input id="role-upi" maxLength={100} autoComplete="off" placeholder={picked?.upiId ? `Empty = ${picked.upiId} (from their profile)` : "Empty = the UPI ID on their profile"} value={f.upiId} onChange={(e) => setF({ ...f, upiId: e.target.value })} />
+            <p className="text-xs text-muted-foreground">Payment QR codes to {f.name || "them"} pay this UPI ID.</p>
           </div>
-          {!r && f.role === "lender" && (
+          {!r && lender && (
             <>
               <div className="space-y-1">
-                <Label htmlFor="role-amount">Amount provided / to provide (₹) *</Label>
-                <Input id="role-amount" type="number" required min={0.01} step="0.01" inputMode="decimal" value={f.expectedAmount} onChange={(e) => setF({ ...f, expectedAmount: e.target.value })} />
+                <Label htmlFor="role-amount">Amount borrowed (₹) *</Label>
+                <Input id="role-amount" type="number" required min={0.01} step="0.01" inputMode="decimal" value={f.lentAmount} onChange={(e) => setF({ ...f, lentAmount: e.target.value })} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="role-due">Due date</Label>
+                <Label htmlFor="role-due">Repay by</Label>
                 <Input id="role-due" type="date" value={f.dueDate} onChange={(e) => setF({ ...f, dueDate: e.target.value })} />
               </div>
-              <div className="space-y-1 sm:col-span-2">
-                <Label htmlFor="role-payee">Money goes to</Label>
-                <NativeSelect id="role-payee" value={f.payeeRoleId} onChange={(e) => setF({ ...f, payeeRoleId: e.target.value })}>
-                  <option value="">The party giver</option>
-                  {providers.map((p) => <option key={p._id} value={p._id}>{p.name} (provider)</option>)}
-                </NativeSelect>
-                <p className="text-xs text-muted-foreground">Already handed over? Add them, then use <strong>Mark paid</strong> on their row.</p>
-              </div>
+              <p className="text-xs text-muted-foreground sm:col-span-2">The party giver now owes this amount to {f.name || "the money giver"}. Participants can also pay their shares straight to them: pick them under <strong>Pays to</strong>.</p>
             </>
           )}
           <DialogFooter className="sm:col-span-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={busy}>{busy && <Loader2 className="animate-spin" />} Save</Button>
+            <Button type="submit" disabled={busy || !f.name.trim()}>{busy && <Loader2 className="animate-spin" />} Save</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -283,7 +306,8 @@ function ShareDialog({ eventId, state, onClose, people, roles }: { eventId: stri
   });
   const [busy, setBusy] = useState(false);
   const receivedMoney = !!p && p.paid > 0;
-  const payees = roles.filter((r) => r._id !== p?.payerRoleId && (!lend || r.role === "provider"));
+  // Money givers first: paying them directly is the common case.
+  const payees = [...roles].sort((a, b) => (a.role === b.role ? 0 : a.role === "lender" ? -1 : 1));
 
   async function save() {
     setBusy(true);
@@ -311,7 +335,7 @@ function ShareDialog({ eventId, state, onClose, people, roles }: { eventId: stri
     <Dialog open={state.open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{p ? (lend ? `Money lent by ${p.payerName}` : `Edit ${p.payerName}'s ${PAYMENT_KIND_LABELS[p.kind].toLowerCase()}`) : "Assign a share"}</DialogTitle>
+          <DialogTitle>{p ? (lend ? `Borrowed from ${p.payee.name}` : `Edit ${p.payerName}'s ${PAYMENT_KIND_LABELS[p.kind].toLowerCase()}`) : "Assign a share"}</DialogTitle>
           <DialogDescription>Each person can have their own amount. They see only their own share, with a QR for what they still owe.</DialogDescription>
         </DialogHeader>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }}>
@@ -327,10 +351,11 @@ function ShareDialog({ eventId, state, onClose, people, roles }: { eventId: stri
           </div>
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="share-payee">Pays to</Label>
-            <NativeSelect id="share-payee" value={f.payeeRoleId} disabled={receivedMoney} onChange={(e) => setF({ ...f, payeeRoleId: e.target.value })}>
+            <NativeSelect id="share-payee" value={f.payeeRoleId} disabled={receivedMoney || lend} onChange={(e) => setF({ ...f, payeeRoleId: e.target.value })}>
               <option value="">The party giver</option>
-              {payees.map((r) => <option key={r._id} value={r._id}>{r.name} ({MONEY_ROLE_LABELS[r.role].toLowerCase()})</option>)}
+              {payees.map((r) => <option key={r._id} value={r._id}>{payeeLabel(r)}</option>)}
             </NativeSelect>
+            {!lend && payees.length === 0 && <p className="text-xs text-muted-foreground">To pay a money giver directly, add them first under <strong>Money givers &amp; providers</strong>.</p>}
           </div>
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="share-note">Note</Label>
@@ -414,7 +439,7 @@ export function PaymentsTable({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Participant</TableHead>
+                <TableHead>Who pays</TableHead>
                 <TableHead className="text-right">Assigned</TableHead>
                 <TableHead className="text-right">Paid</TableHead>
                 <TableHead className="text-right">Due</TableHead>
@@ -428,7 +453,7 @@ export function PaymentsTable({
                   <TableCell>
                     <p className="font-medium">{p.payerName}{p.isMine && <span className="ml-1 text-xs text-primary">(you)</span>}</p>
                     <p className="text-xs text-muted-foreground">
-                      {PAYMENT_KIND_LABELS[p.kind]} → {p.payee.role === "host" ? `${p.payee.name} (giver)` : p.payee.name}
+                      {PAYMENT_KIND_LABELS[p.kind]} → {p.payee.role === "host" ? `${p.payee.name} (party giver)` : payeeLabel({ name: p.payee.name, role: p.payee.role })}
                       {p.dueDate && <> · due {formatDate(p.dueDate)}</>}
                     </p>
                   </TableCell>
@@ -438,8 +463,8 @@ export function PaymentsTable({
                   <TableCell><PaymentStatusBadge status={p.status} /></TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => setViewing(p._id)}><Eye /> View</Button>
-                      {p.canRecord && p.due > 0 && <Button size="sm" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> Mark paid</Button>}
+                      <Button size="icon-sm" variant="ghost" title="View QR & history" aria-label={`View ${p.payerName}`} onClick={() => setViewing(p._id)}><Eye /></Button>
+                      {p.canRecord && p.due > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> Mark paid</Button>}
                       {canManage && onEdit && <Button size="icon-sm" variant="ghost" aria-label={`Edit ${p.payerName}`} onClick={() => onEdit(p)}><Pencil /></Button>}
                       {canManage && p.kind !== "lend" && p.paid === 0 && !p.transactions.some((t) => !t.voided) && (
                         <ConfirmButton trigger={<Button size="icon-sm" variant="ghost" className="text-destructive" aria-label={`Remove ${p.payerName}`}><Trash2 /></Button>} title={`Remove ${p.payerName}'s ${PAYMENT_KIND_LABELS[p.kind].toLowerCase()}?`} description="Nothing was paid against it yet." confirmLabel="Remove" onConfirm={() => remove(p)} />
@@ -487,7 +512,7 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
         <DialogHeader>
           <DialogTitle>{p.payerName} · {PAYMENT_KIND_LABELS[p.kind]}</DialogTitle>
           <DialogDescription>
-            Pays <strong>{p.payee.name}</strong>{p.payee.role === "host" ? " (party giver)" : ` (${MONEY_ROLE_LABELS[p.payee.role].toLowerCase()})`}{p.dueDate && <> · due {formatDate(p.dueDate)}</>}
+            Pays <strong>{p.payee.name}</strong>{p.payee.role === "host" ? " (party giver)" : ` (${p.payee.role === "lender" ? "money giver" : "provider"})`}{p.dueDate && <> · due {formatDate(p.dueDate)}</>}
           </DialogDescription>
         </DialogHeader>
 

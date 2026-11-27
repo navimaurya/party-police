@@ -33,16 +33,16 @@ const PartyPaymentSchema = new Schema(
     kind: { type: String, enum: PAYMENT_KINDS, required: true },
     payerName: { type: String, required: true, trim: true, maxlength: 100 },
     payerEmail: { type: String, trim: true, lowercase: true, maxlength: 200, default: null },
-    /** "lend": the lender (PartyMoneyRole) this record belongs to. */
+    /** Payer when they are a lender/provider (set on "other" records only; unused for now). */
     payerRoleId: { type: Schema.Types.ObjectId, ref: "PartyMoneyRole", default: null },
-    /** Who receives the money: a lender/provider, or null = the party giver. */
+    /** Who receives the money: a money giver/provider, or null = the party giver. "lend": the money giver. */
     payeeRoleId: { type: Schema.Types.ObjectId, ref: "PartyMoneyRole", default: null },
     amountPaise: { type: Number, required: true, min: 1, validate: Number.isInteger },
     paidPaise: { type: Number, required: true, min: 0, default: 0, validate: Number.isInteger },
     status: { type: String, enum: PAYMENT_STATUSES, required: true, default: "pending" },
     dueDate: { type: Date, default: null },
     note: { type: String, trim: true, maxlength: 300, default: "" },
-    /** One share per person and one lend record per lender, per party. Null for "other". */
+    /** One share per person and one borrowed-money record per money giver, per party. Null for "other". */
     dedupeKey: { type: String, default: null },
     transactions: { type: [PaymentTransactionSchema], default: [] },
     /** Optimistic concurrency for every change to the amounts. */

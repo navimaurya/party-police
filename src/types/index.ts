@@ -149,23 +149,27 @@ export const PAYMENT_MODELS = ["standard", "lender_provider"] as const;
 export type PaymentModel = (typeof PAYMENT_MODELS)[number];
 export const PAYMENT_MODEL_LABELS: Record<PaymentModel, string> = {
   standard: "Standard / contribution",
-  lender_provider: "Lenders & providers",
+  lender_provider: "Money givers & providers",
 };
 
-/** People with a money job on a lender/provider party. */
+/**
+ * People with a money job on a lender/provider party.
+ * - lender ("money giver"): a team member the party giver borrowed money from, to be repaid;
+ * - provider: someone who collects payments from participants.
+ */
 export const MONEY_ROLES = ["lender", "provider"] as const;
 export type MoneyRole = (typeof MONEY_ROLES)[number];
-export const MONEY_ROLE_LABELS: Record<MoneyRole, string> = { lender: "Lender", provider: "Provider (collector)" };
+export const MONEY_ROLE_LABELS: Record<MoneyRole, string> = { lender: "Money giver", provider: "Provider (collector)" };
 
 /**
  * One payment obligation.
- * - share: a participant's assigned share;
- * - lend:  what a lender provides (or promised to provide) for the party;
- * - other: any other money someone owes on this party (e.g. a provider settling with a lender).
+ * - share: a participant's assigned share (paid to the giver, a provider or a money giver);
+ * - lend:  money the party giver borrowed from a money giver, which the giver repays;
+ * - other: any other money someone owes on this party (e.g. a provider settling with a money giver).
  */
 export const PAYMENT_KINDS = ["share", "lend", "other"] as const;
 export type PaymentKind = (typeof PAYMENT_KINDS)[number];
-export const PAYMENT_KIND_LABELS: Record<PaymentKind, string> = { share: "Share", lend: "Money lent", other: "Other" };
+export const PAYMENT_KIND_LABELS: Record<PaymentKind, string> = { share: "Share", lend: "Borrowed money", other: "Other" };
 
 /** Stored status, derived from the amounts on every change. */
 export const PAYMENT_STATUSES = ["pending", "partially_paid", "paid"] as const;

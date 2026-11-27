@@ -95,15 +95,6 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
         <p className="rounded-xl border bg-muted/40 p-3 text-sm text-muted-foreground">📅 Party day: <strong className="text-foreground">{formatDate(event.eventDate)}</strong></p>
       )}
       {split && <ContriPaymentCard split={split} hostName={event.organizerName} manageHint />}
-      <Card>
-        <CardHeader><CardTitle>💰 Payments</CardTitle></CardHeader>
-        <CardContent>
-          <PaymentsPanel
-            data={payments}
-            people={[{ name: event.organizerName, email: event.organizerEmail ?? null }, ...event.participants.filter((p) => (p.email ?? "") !== (event.organizerEmail ?? "") || !p.email)]}
-          />
-        </CardContent>
-      </Card>
       {pendingThankYou && (
         <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
           💌 Thank-you email scheduled for <strong>{formatDateTime(pendingThankYou.scheduledAt)}</strong>. Upload bills now and they&apos;ll be included.
@@ -116,14 +107,24 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
             <EventForm initial={toFormValue(event)} budgetRules={serialize(budget.categories)} validationEnabled={budget.validationEnabled} members={members} viewer={viewer} />
           </CardContent>
         </Card>
-        {admin && <div className="space-y-6">
-          <Card>
+        <div className="min-w-0 space-y-6">
+          {admin && <Card>
             <CardHeader><CardTitle>🧾 Bills & attachments</CardTitle></CardHeader>
             <CardContent>
               <BillsManager eventId={id} bills={serialize(bills.items)} maxSizeMb={Math.round(env().MAX_FILE_SIZE / 1024 / 1024)} />
             </CardContent>
-          </Card>
+          </Card>}
           <Card>
+            <CardHeader><CardTitle>💰 Payments</CardTitle></CardHeader>
+            <CardContent>
+              <PaymentsPanel
+                data={payments}
+                members={members.map((m) => ({ name: m.name, email: m.email, upiId: m.upiId }))}
+                people={[{ name: event.organizerName, email: event.organizerEmail ?? null }, ...event.participants.filter((p) => !p.email || p.email !== (event.organizerEmail ?? ""))]}
+              />
+            </CardContent>
+          </Card>
+          {admin && <Card>
             <CardHeader><CardTitle>📬 Email jobs for this party</CardTitle></CardHeader>
             <CardContent>
               {jobs.length === 0 ? (
@@ -143,8 +144,8 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
               )}
               <Link href="/admin/notifications" className="mt-3 inline-block text-xs text-primary hover:underline">Manage email queue →</Link>
             </CardContent>
-          </Card>
-        </div>}
+          </Card>}
+        </div>
       </div>
     </div>
   );

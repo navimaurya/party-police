@@ -2,9 +2,10 @@ import { Schema, model, models, type InferSchemaType, type Model } from "mongoos
 import { MONEY_ROLES } from "@/types";
 
 /**
- * A lender or provider on a "lender_provider" party.
- * Lenders front money for the party; providers collect payments from participants.
- * Each lender has exactly one "lend" PartyPayment that tracks what they provided.
+ * A money giver (lender) or provider on a "lender_provider" party.
+ * The party giver borrowed money from a money giver; each money giver has exactly one "lend"
+ * PartyPayment (payer = party giver, payee = the money giver) that tracks the repayment.
+ * Providers collect payments from participants.
  */
 const PartyMoneyRoleSchema = new Schema(
   {

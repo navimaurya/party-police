@@ -122,9 +122,9 @@ export type PaymentSummary = {
   /** Individual shares. */
   assigned: number;
   collected: number;
-  /** Lenders: promised / actually provided / still to provide. */
+  /** Borrowed from money givers / repaid to them / still owed to them. */
   lent: number;
-  lentProvided: number;
+  lentRepaid: number;
   lentDue: number;
   /** Every record. */
   paid: number;
@@ -213,7 +213,7 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
 }
 
 function summarize(event: EventLean, payments: PaymentLean[], views: PaymentView[]): PaymentSummary {
-  let assigned = 0, collected = 0, lent = 0, lentProvided = 0, paid = 0, outstanding = 0;
+  let assigned = 0, collected = 0, lent = 0, lentRepaid = 0, paid = 0, outstanding = 0;
   for (const p of payments) {
     paid += p.paidPaise;
     outstanding += remainingPaise(p.amountPaise, p.paidPaise);
@@ -222,7 +222,7 @@ function summarize(event: EventLean, payments: PaymentLean[], views: PaymentView
       collected += p.paidPaise;
     } else if (p.kind === "lend") {
       lent += p.amountPaise;
-      lentProvided += p.paidPaise;
+      lentRepaid += p.paidPaise;
     }
   }
   const counts = { all: views.length, pending: 0, partially_paid: 0, paid: 0, overdue: 0 };
@@ -232,8 +232,8 @@ function summarize(event: EventLean, payments: PaymentLean[], views: PaymentView
     assigned: fromPaise(assigned),
     collected: fromPaise(collected),
     lent: fromPaise(lent),
-    lentProvided: fromPaise(lentProvided),
-    lentDue: fromPaise(Math.max(0, lent - lentProvided)),
+    lentRepaid: fromPaise(lentRepaid),
+    lentDue: fromPaise(Math.max(0, lent - lentRepaid)),
     paid: fromPaise(paid),
     outstanding: fromPaise(outstanding),
     counts,
@@ -315,17 +315,16 @@ export async function getPaymentUpiLink(eventId: string, paymentId: string, acto
 
 const dueDateFrom = (v: string | null | undefined) => (v === undefined ? undefined : v ? atLocalHour(v, 12) : null);
 
-async function assertPayee(event: EventLean, payeeRoleId: string | null | undefined, opts: { notRoleId?: string } = {}) {
+async function assertPayee(event: EventLean, payeeRoleId: string | null | undefined) {
   if (!payeeRoleId) return null;
   const _id = assertObjectId(payeeRoleId, "payee");
   const role = await PartyMoneyRole.findOne({ _id, eventId: event._id }).lean();
   if (!role) throw badRequest("The payee isn't a lender or provider on this party");
-  if (opts.notRoleId && String(role._id) === opts.notRoleId) throw badRequest("A lender can't pay themselves");
   return _id;
 }
 
 function assertLenderModel(event: EventLean) {
-  if (paymentModelOf(event) !== "lender_provider") throw badRequest("Switch this party to the “Lenders & providers” payment model first");
+  if (paymentModelOf(event) !== "lender_provider") throw badRequest("Switch this party to the “Money givers & providers” payment model first");
 }
 
 function rethrowDuplicate(err: unknown, message: string): never {
@@ -346,7 +345,6 @@ export async function createMoneyRole(eventId: string, input: z.infer<typeof Mon
   const event = await loadManaged(eventId, actor);
   assertLenderModel(event);
   const _id = new Types.ObjectId();
-  const payeeRoleId = input.role === "lender" ? await assertPayee(event, input.payeeRoleId) : null;
   let role;
   try {
     role = await PartyMoneyRole.create({
@@ -362,16 +360,15 @@ export async function createMoneyRole(eventId: string, input: z.infer<typeof Mon
     rethrowDuplicate(err, `${input.name} is already a ${input.role} on this party`);
   }
   if (input.role === "lender") {
-    // What the lender provides is tracked like any other obligation (provided = paid).
+    // The party giver borrowed this money: they owe it back to the money giver.
     try {
       await PartyPayment.create({
         eventId: event._id,
         kind: "lend",
-        payerName: input.name,
-        payerEmail: input.email ?? null,
-        payerRoleId: _id,
-        payeeRoleId,
-        amountPaise: toPaise(input.expectedAmount!),
+        payerName: event.organizerName,
+        payerEmail: event.organizerEmail ?? null,
+        payeeRoleId: _id,
+        amountPaise: toPaise(input.lentAmount!),
         dueDate: dueDateFrom(input.dueDate) ?? null,
         dedupeKey: `lend:${String(_id)}`,
         createdById: Types.ObjectId.isValid(actor.id) ? actor.id : null,
@@ -381,7 +378,7 @@ export async function createMoneyRole(eventId: string, input: z.infer<typeof Mon
       throw err;
     }
   }
-  await audit({ action: "payment_role.create", entityType: "PartyMoneyRole", entityId: String(_id), actorId: actor.id, newValue: { ...role.toObject(), expectedAmount: input.expectedAmount ?? null } });
+  await audit({ action: "payment_role.create", entityType: "PartyMoneyRole", entityId: String(_id), actorId: actor.id, newValue: { ...role.toObject(), lentAmount: input.lentAmount ?? null } });
   return role.toObject();
 }
 
@@ -401,8 +398,6 @@ export async function updateMoneyRole(eventId: string, roleId: string, input: z.
   } catch (err) {
     rethrowDuplicate(err, `${name} is already a ${before.role} on this party`);
   }
-  // The lender's own record follows their name/email (so they see it under My payments).
-  await PartyPayment.updateMany({ eventId: event._id, payerRoleId: _id }, { $set: { payerName: name, payerEmail: email } });
   await audit({ action: "payment_role.update", entityType: "PartyMoneyRole", entityId: roleId, actorId: actor.id, previousValue: before, newValue: after });
   return after;
 }
@@ -413,14 +408,14 @@ export async function deleteMoneyRole(eventId: string, roleId: string, actor: Pa
   const _id = assertObjectId(roleId, "role id");
   const role = await PartyMoneyRole.findOne({ _id, eventId: event._id }).lean();
   if (!role) throw notFound("Lender or provider not found");
-  if (await PartyPayment.exists({ eventId: event._id, payeeRoleId: _id })) {
+  if (await PartyPayment.exists({ eventId: event._id, payeeRoleId: _id, kind: { $ne: "lend" } })) {
     throw conflict(`Some payments go to ${role.name}. Point them to someone else first.`);
   }
-  const own = await PartyPayment.findOne({ eventId: event._id, payerRoleId: _id }).lean();
+  const own = await PartyPayment.findOne({ eventId: event._id, kind: "lend", payeeRoleId: _id }).lean();
   if (own && (own.paidPaise > 0 || (own.transactions ?? []).some((t) => !t.voidedAt))) {
-    throw conflict(`${role.name} has already provided money. Void those payments before removing them.`);
+    throw conflict(`Repayments to ${role.name} were already recorded. Void them before removing ${role.name}.`);
   }
-  await PartyPayment.deleteMany({ eventId: event._id, payerRoleId: _id });
+  await PartyPayment.deleteMany({ eventId: event._id, kind: "lend", payeeRoleId: _id });
   await PartyMoneyRole.deleteOne({ _id });
   await audit({ action: "payment_role.delete", entityType: "PartyMoneyRole", entityId: roleId, actorId: actor.id, previousValue: { role, lendRecord: own } });
 }
@@ -462,7 +457,7 @@ export async function updatePayment(eventId: string, paymentId: string, input: z
   const hasPayments = before.paidPaise > 0;
 
   if (input.payerName !== undefined || input.payerEmail !== undefined) {
-    if (before.kind === "lend") throw badRequest("Change the lender's name on the lender instead");
+    if (before.kind === "lend") throw badRequest("Borrowed money is always repaid by the party giver");
     const name = input.payerName ?? before.payerName;
     const email = input.payerEmail !== undefined ? input.payerEmail : (before.payerEmail ?? null);
     if (hasPayments && personKey({ name, email }) !== personKey({ name: before.payerName, email: before.payerEmail })) {
@@ -472,7 +467,8 @@ export async function updatePayment(eventId: string, paymentId: string, input: z
     if (before.kind === "share") $set.dedupeKey = `share:${personKey({ name, email })}`;
   }
   if (input.payeeRoleId !== undefined) {
-    const next = await assertPayee(event, input.payeeRoleId, { notRoleId: before.payerRoleId ? String(before.payerRoleId) : undefined });
+    const next = await assertPayee(event, input.payeeRoleId);
+    if (before.kind === "lend" && String(next ?? "") !== String(before.payeeRoleId ?? "")) throw badRequest("Borrowed money is repaid to the money giver it came from");
     if (String(next ?? "") !== String(before.payeeRoleId ?? "")) {
       if (hasPayments) throw conflict("Money was already received for this payment, so the recipient can't change");
       if (next) assertLenderModel(event);
@@ -509,7 +505,7 @@ export async function deletePayment(eventId: string, paymentId: string, actor: P
   await connectDB();
   const event = await loadManaged(eventId, actor);
   const p = await loadPayment(event, paymentId);
-  if (p.kind === "lend") throw badRequest("Remove the lender instead");
+  if (p.kind === "lend") throw badRequest("Remove the money giver instead");
   // Every payment keeps its record: once money was recorded, it can only be voided.
   if ((p.transactions ?? []).some((t) => !t.voidedAt)) throw conflict("Payments were recorded against this. Void them first.");
   const res = await PartyPayment.deleteOne({ _id: p._id, revision: p.revision ?? 0 });
@@ -530,7 +526,7 @@ export async function recordPayment(eventId: string, paymentId: string, input: z
   const roles = await rolesOf(event._id);
   const access = accessFor(event, roles, actor);
   const before = await loadPayment(event, paymentId);
-  if (!canRecord(access, before)) throw forbidden("Only the party giver, a manager or the person collecting this payment can record it");
+  if (!canRecord(access, before)) throw forbidden("Only the party giver, a manager or the person receiving this payment can record it");
 
   const existing = (before.transactions ?? []).find((t) => t.idempotencyKey === input.idempotencyKey);
   if (existing) return { payment: before, duplicate: true };
@@ -616,14 +612,19 @@ export async function voidTransaction(eventId: string, paymentId: string, txId: 
 /** Lender/provider is a separate model from the contri split, so the two can't be combined. */
 export async function assertPaymentModelChange(opts: { eventId?: Types.ObjectId; category: string; before?: PaymentModel; next: PaymentModel }) {
   if (opts.next === "lender_provider" && opts.category === "contri") {
-    throw badRequest("Contri parties use the contri split. Pick another category for lenders & providers.");
+    throw badRequest("Contri parties use the contri split. Pick another category for money givers & providers.");
   }
   if (opts.eventId && opts.before === "lender_provider" && opts.next !== "lender_provider") {
     await connectDB();
     if (await PartyMoneyRole.exists({ eventId: opts.eventId })) {
-      throw conflict("Remove this party's lenders and providers before switching its payment model");
+      throw conflict("Remove this party's money givers and providers before switching its payment model");
     }
   }
+}
+
+/** The party giver changed: they are now the one repaying borrowed money. */
+export async function syncBorrower(eventId: Types.ObjectId, organizerName: string, organizerEmail: string | null | undefined) {
+  await PartyPayment.updateMany({ eventId, kind: "lend" }, { $set: { payerName: organizerName, payerEmail: organizerEmail ? lower(organizerEmail) : null } });
 }
 
 /** Called when a party is deleted. */

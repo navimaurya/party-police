@@ -415,14 +415,13 @@ export const MoneyRoleCreateSchema = z
     name: trimmed(100).min(1, "Name is required"),
     email: optionalEmail,
     upiId: upiId.optional(),
-    /** Lenders: how much they provide (or promised to provide). */
-    expectedAmount: rupees.optional(),
-    /** Lenders: who receives their money (a provider), null = the party giver. */
-    payeeRoleId: objectIdString.nullable().optional(),
+    /** Money givers: how much the party giver borrowed from them (the giver repays it). */
+    lentAmount: rupees.optional(),
+    /** Money givers: when the party giver should repay. */
     dueDate: dueDay,
   })
   .strict()
-  .refine((v) => v.role !== "lender" || v.expectedAmount !== undefined, { path: ["expectedAmount"], message: "How much is this lender providing?" });
+  .refine((v) => v.role !== "lender" || v.lentAmount !== undefined, { path: ["lentAmount"], message: "How much did the party giver borrow?" });
 
 export const MoneyRoleUpdateSchema = z
   .object({ name: trimmed(100).min(1).optional(), email: optionalEmail, upiId: upiId.optional() })
@@ -430,7 +429,7 @@ export const MoneyRoleUpdateSchema = z
 
 export const PaymentCreateSchema = z
   .object({
-    /** Lend records are created with their lender (MoneyRoleCreateSchema). */
+    /** Borrowed-money records are created with their money giver (MoneyRoleCreateSchema). */
     kind: z.enum(["share", "other"]).default("share"),
     payerName: trimmed(100).min(1, "Who pays?"),
     payerEmail: optionalEmail,

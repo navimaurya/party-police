@@ -318,9 +318,9 @@ export function EventForm({
         </div>
         <p className="text-xs text-muted-foreground">
           {v.category === "contri"
-            ? "Contri parties use the contri split above. Pick another category to use lenders & providers."
+            ? "Contri parties use the contri split above. Pick another category to use money givers & providers."
             : (v.paymentModel ?? "standard") === "lender_provider"
-              ? "Lenders front the money; providers collect it back. Add them, and each person's share, in the Payments section of the party page once it's saved."
+              ? "The party giver borrowed money from a team member (money giver) and pays it back. Add money givers, providers and each person's share in the Payments section of the party page once it's saved."
               : "The usual flow. You can still assign individual shares and track payments on the party page."}
         </p>
       </fieldset>
