@@ -5,7 +5,7 @@ import { PartyEvent, PartyMoneyRole, PartyPayment, User, type PartyEventDoc, typ
 import { badRequest, conflict, forbidden, notFound } from "@/lib/errors";
 import { assertObjectId } from "@/lib/utils-server";
 import { atLocalHour, dayKey } from "@/lib/time";
-import { upiPayLink } from "@/lib/contri";
+import { computeContriSplit, upiPayLink } from "@/lib/contri";
 import { fromPaise, personKey, remainingPaise, storedStatus, toPaise, viewStatus } from "@/lib/payments";
 import type {
   MoneyRoleCreateSchema,
@@ -57,8 +57,15 @@ function accessFor(event: EventLean, roles: RoleLean[], actor: PaymentActor): Ac
   };
 }
 
-const canRecord = (a: Access, p: Pick<PaymentLean, "payeeRoleId">) => a.manage || (!!p.payeeRoleId && a.collectorRoleIds.has(String(p.payeeRoleId)));
-const canView = (a: Access, p: Pick<PaymentLean, "payeeRoleId" | "payerEmail">) => canRecord(a, p) || (!!p.payerEmail && lower(p.payerEmail) === a.email);
+const isPayer = (a: Access, p: Pick<PaymentLean, "payerEmail">) => !!p.payerEmail && lower(p.payerEmail) === a.email;
+const isReceiver = (a: Access, p: Pick<PaymentLean, "payeeRoleId">) => a.manage || (!!p.payeeRoleId && a.collectorRoleIds.has(String(p.payeeRoleId)));
+/**
+ * Who may record a payment: the organizers, whoever receives it, and the payer themselves
+ * ("I've paid", so the giver doesn't have to mark everyone). Self-marked payments are flagged
+ * in the history, and the organizer can void one that never arrived.
+ */
+const canRecord = (a: Access, p: Pick<PaymentLean, "payeeRoleId" | "payerEmail">) => isReceiver(a, p) || isPayer(a, p);
+const canView = canRecord;
 
 async function loadEvent(eventId: string) {
   const _id = assertObjectId(eventId, "party id");
@@ -88,6 +95,8 @@ export type TransactionView = {
   recordedByName: string;
   recordedByEmail: string;
   createdAt: string;
+  /** Marked by the payer themselves rather than by whoever received it. */
+  selfReported: boolean;
   voided: boolean;
   voidedAt: string | null;
   voidedByEmail: string;
@@ -115,6 +124,8 @@ export type PaymentView = {
   revision: number;
   canRecord: boolean;
   isMine: boolean;
+  /** Created from the contri split; follows it until edited by hand. */
+  auto: boolean;
 };
 export type RoleView = { _id: string; role: MoneyRole; name: string; email: string | null; upiId: string; effectiveUpiId: string };
 export type PaymentSummary = {
@@ -195,6 +206,7 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
         recordedByName: tx.recordedByName ?? "",
         recordedByEmail: tx.recordedByEmail ?? "",
         createdAt: new Date(tx.createdAt ?? tx.paidAt).toISOString(),
+        selfReported: !!(tx as { selfReported?: boolean }).selfReported,
         voided: !!tx.voidedAt,
         voidedAt: tx.voidedAt ? new Date(tx.voidedAt).toISOString() : null,
         voidedByEmail: tx.voidedByEmail ?? "",
@@ -208,7 +220,8 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
         : null,
     revision: p.revision ?? 0,
     canRecord: canRecord(access, p),
-    isMine: !!p.payerEmail && lower(p.payerEmail) === access.email,
+    isMine: isPayer(access, p),
+    auto: p.source === "contri",
   };
 }
 
@@ -253,6 +266,7 @@ function roleView(ctx: Ctx, r: RoleLean): RoleView {
 export async function getPartyPayments(eventId: string, actor: PaymentActor) {
   await connectDB();
   const event = await loadEvent(eventId);
+  if (event.category === "contri") await syncContriShares(event._id);
   const roles = await rolesOf(event._id);
   const access = accessFor(event, roles, actor);
   const all = (await PartyPayment.find({ eventId: event._id }).sort({ kind: 1, createdAt: 1 }).lean()) as PaymentLean[];
@@ -485,6 +499,8 @@ export async function updatePayment(eventId: string, paymentId: string, input: z
   const due = dueDateFrom(input.dueDate);
   if (due !== undefined) $set.dueDate = due;
   if (input.note !== undefined) $set.note = input.note;
+  // Changed by hand: the contri split stops overwriting it.
+  if (before.source === "contri" && (input.amount !== undefined || $set.payeeRoleId !== undefined)) $set.source = "manual";
 
   let after;
   try {
@@ -506,6 +522,7 @@ export async function deletePayment(eventId: string, paymentId: string, actor: P
   const event = await loadManaged(eventId, actor);
   const p = await loadPayment(event, paymentId);
   if (p.kind === "lend") throw badRequest("Remove the money giver instead");
+  if (p.source === "contri") throw badRequest("This share comes from the contri split. Remove the person from the participants instead.");
   // Every payment keeps its record: once money was recorded, it can only be voided.
   if ((p.transactions ?? []).some((t) => !t.voidedAt)) throw conflict("Payments were recorded against this. Void them first.");
   const res = await PartyPayment.deleteOne({ _id: p._id, revision: p.revision ?? 0 });
@@ -526,7 +543,8 @@ export async function recordPayment(eventId: string, paymentId: string, input: z
   const roles = await rolesOf(event._id);
   const access = accessFor(event, roles, actor);
   const before = await loadPayment(event, paymentId);
-  if (!canRecord(access, before)) throw forbidden("Only the party giver, a manager or the person receiving this payment can record it");
+  if (!canRecord(access, before)) throw forbidden("Only the payer, the person receiving it, the party giver or a manager can record this payment");
+  const selfReported = isPayer(access, before) && !isReceiver(access, before);
 
   const existing = (before.transactions ?? []).find((t) => t.idempotencyKey === input.idempotencyKey);
   if (existing) return { payment: before, duplicate: true };
@@ -555,6 +573,7 @@ export async function recordPayment(eventId: string, paymentId: string, input: z
     recordedByEmail: actor.email,
     recordedByName: actor.name,
     idempotencyKey: input.idempotencyKey,
+    selfReported,
   };
   const after = await PartyPayment.findOneAndUpdate(
     { _id: before._id, revision: before.revision ?? 0, paidPaise: before.paidPaise, "transactions.idempotencyKey": { $ne: input.idempotencyKey } },
@@ -625,6 +644,79 @@ export async function assertPaymentModelChange(opts: { eventId?: Types.ObjectId;
 /** The party giver changed: they are now the one repaying borrowed money. */
 export async function syncBorrower(eventId: Types.ObjectId, organizerName: string, organizerEmail: string | null | undefined) {
   await PartyPayment.updateMany({ eventId, kind: "lend" }, { $set: { payerName: organizerName, payerEmail: organizerEmail ? lower(organizerEmail) : null } });
+}
+
+/* ------------------------------ contri parties ------------------------------ */
+
+/**
+ * Contri party: one share per participant (the host excluded) for the per-head amount, paid to
+ * the host. Kept in sync with the split; idempotent. Shares already paid against are never
+ * removed, and shares edited by hand ("manual") are left alone.
+ */
+export async function syncContriShares(eventId: Types.ObjectId | string) {
+  await connectDB();
+  const event = (await PartyEvent.findById(eventId).lean()) as EventLean | null;
+  if (!event) return;
+  const split = event.category === "contri" && event.status !== "cancelled" ? computeContriSplit(event) : null;
+  const perHead = split ? toPaise(split.perHead) : 0;
+
+  const host = new Set([personKey({ name: event.organizerName, email: event.organizerEmail }), personKey({ name: event.organizerName })]);
+  const payers = new Map<string, { name: string; email: string | null }>();
+  for (const p of event.participants ?? []) {
+    if (!p.name && !p.email) continue;
+    const k = personKey(p);
+    // The host pays nobody (same matching as the contri headcount: by email, or by name without one).
+    if (host.has(k) || payers.has(k)) continue;
+    payers.set(k, { name: p.name, email: p.email ? lower(p.email) : null });
+  }
+  const wanted = split ? payers : new Map<string, { name: string; email: string | null }>();
+
+  const existing = (await PartyPayment.find({ eventId: event._id, kind: "share" }).lean()) as PaymentLean[];
+  const byKey = new Map(existing.map((p) => [p.dedupeKey ?? "", p]));
+  for (const [k, person] of wanted) {
+    const cur = byKey.get(`share:${k}`);
+    if (!cur) {
+      await PartyPayment.create({ eventId: event._id, kind: "share", source: "contri", payerName: person.name, payerEmail: person.email, payeeRoleId: null, amountPaise: perHead, dedupeKey: `share:${k}` }).catch((err) => {
+        if ((err as { code?: number }).code !== 11000) throw err; // created meanwhile
+      });
+    } else if (cur.source === "contri" && cur.amountPaise !== Math.max(perHead, cur.paidPaise)) {
+      // Never below what was already paid, so the due can't go negative.
+      const amountPaise = Math.max(perHead, cur.paidPaise);
+      await PartyPayment.updateOne({ _id: cur._id, revision: cur.revision ?? 0 }, { $set: { amountPaise, status: storedStatus(amountPaise, cur.paidPaise) }, $inc: { revision: 1 } });
+    }
+  }
+  const stale = existing.filter((p) => p.source === "contri" && !wanted.has((p.dedupeKey ?? "").replace(/^share:/, "")) && p.paidPaise === 0 && !(p.transactions ?? []).some((t) => !t.voidedAt));
+  if (stale.length) await PartyPayment.deleteMany({ _id: { $in: stale.map((p) => p._id) }, paidPaise: 0 });
+}
+
+export type ContriPaymentState = {
+  /** Shares on the party, and how many are fully paid. */
+  shares: number;
+  paidShares: number;
+  /** Every share is fully paid: no QR codes anywhere. */
+  allPaid: boolean;
+  /** The viewer's own share, if they have one. */
+  mine: PaymentView | null;
+};
+
+/** For the contri card on party pages: is everything paid, and what does this viewer still owe? */
+export async function getContriPaymentState(eventId: string, viewer?: PaymentActor | null): Promise<ContriPaymentState | null> {
+  await connectDB();
+  const event = await loadEvent(eventId);
+  if (event.category !== "contri") return null;
+  await syncContriShares(event._id);
+  const shares = (await PartyPayment.find({ eventId: event._id, kind: "share" }).lean()) as PaymentLean[];
+  if (!shares.length) return null;
+  const paidShares = shares.filter((p) => remainingPaise(p.amountPaise, p.paidPaise) === 0).length;
+  let mine: PaymentView | null = null;
+  if (viewer) {
+    const own = shares.find((p) => p.payerEmail && lower(p.payerEmail) === lower(viewer.email));
+    if (own) {
+      const roles = await rolesOf(event._id);
+      mine = toView(await buildCtx(event, roles), own, accessFor(event, roles, viewer));
+    }
+  }
+  return { shares: shares.length, paidShares, allPaid: paidShares === shares.length, mine };
 }
 
 /** Called when a party is deleted. */

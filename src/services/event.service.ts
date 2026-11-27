@@ -16,7 +16,7 @@ import { isAdminRole, isPartyManager, type EventStatus, type UserRole } from "@/
 import { enforceBudget } from "./budget.service";
 import { audit } from "./audit.service";
 import { giverThanksKey } from "./notification.service";
-import { assertPaymentModelChange, deleteEventPayments, paymentModelOf, syncBorrower } from "./payment.service";
+import { assertPaymentModelChange, deleteEventPayments, paymentModelOf, syncBorrower, syncContriShares } from "./payment.service";
 
 /**
  * "Party added" and "party changed" emails wait this long, so edits made right after
@@ -179,6 +179,7 @@ export async function createEvent(input: CreateInput, actorId: string, actor?: E
       eventId: _id,
     });
   }
+  if (event.category === "contri") await syncContriShares(_id);
   if (isCompleted) await onCompleted(event, actorId);
   return event;
 }
@@ -286,6 +287,8 @@ export async function updateEvent(id: string, input: UpdateInput, actorId: strin
   if (after.organizerName !== before.organizerName || (after.organizerEmail ?? "") !== (before.organizerEmail ?? "")) {
     await syncBorrower(_id, after.organizerName, after.organizerEmail);
   }
+  // Contri split changed (participants, total, headcount, category, cancellation): shares follow.
+  if (after.category === "contri" || before.category === "contri") await syncContriShares(_id);
 
   // Participants hear about a change only when the party DAY or the party GIVER changed.
   const dateChanged = !!nextDate && dayKey(nextDate) !== dayKey(before.eventDate);

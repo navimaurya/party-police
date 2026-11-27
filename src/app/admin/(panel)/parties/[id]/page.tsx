@@ -20,7 +20,7 @@ import { getEvent, getEventContriSplit } from "@/services/event.service";
 import { ContriPaymentCard } from "@/components/shared/contri-payment-card";
 import { listEventJobs } from "@/services/notification.service";
 import { listActiveUsers } from "@/services/user.service";
-import { getPartyPayments } from "@/services/payment.service";
+import { getContriPaymentState, getPartyPayments } from "@/services/payment.service";
 import { PaymentsPanel } from "@/components/payments/payments-panel";
 import { ROLE_LABELS, isAdminRole, isPartyManager } from "@/types";
 
@@ -44,13 +44,15 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
   const isGiver = (raw.organizerEmail ?? "").toLowerCase() === user.email.toLowerCase();
   // Members manage only parties they give; for anyone else's party they see the public page.
   if (!manager && !isGiver) redirect(raw.publicVisibility ? `/parties/${id}` : "/admin/parties");
-  const [bills, budget, jobs, membersRaw, split, payments] = await Promise.all([
+  // Payments first: on contri parties this also creates/syncs each participant's share.
+  const payments = await getPartyPayments(id, user);
+  const [bills, budget, jobs, membersRaw, split, contriState] = await Promise.all([
     listBills({ eventId: id, admin: true, limit: 100 }),
     getBudgetConfig(),
     listEventJobs(id),
     listActiveUsers(),
     getEventContriSplit(id, { admin: true }),
-    getPartyPayments(id, user),
+    getContriPaymentState(id, user),
   ]);
   const members = membersRaw.map((m) => ({ name: m.name, email: m.email, role: ROLE_LABELS[m.role], upiId: m.upiId ?? "" }));
   const event = serialize(raw);
@@ -94,7 +96,7 @@ export default async function AdminPartyPage(props: PageProps<"/admin/parties/[i
       {event.status === "upcoming" && !partyStarted && (
         <p className="rounded-xl border bg-muted/40 p-3 text-sm text-muted-foreground">📅 Party day: <strong className="text-foreground">{formatDate(event.eventDate)}</strong></p>
       )}
-      {split && <ContriPaymentCard split={split} hostName={event.organizerName} manageHint />}
+      {split && <ContriPaymentCard split={split} hostName={event.organizerName} manageHint state={contriState} />}
       {pendingThankYou && (
         <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
           💌 Thank-you email scheduled for <strong>{formatDateTime(pendingThankYou.scheduledAt)}</strong>. Upload bills now and they&apos;ll be included.

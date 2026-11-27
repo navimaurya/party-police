@@ -15,6 +15,8 @@ const PaymentTransactionSchema = new Schema(
     recordedByName: { type: String, default: "" },
     /** Sent by the client with each "Mark as paid": a retried or double-clicked submit is applied once. */
     idempotencyKey: { type: String, required: true },
+    /** Marked paid by the payer themselves ("I've paid"), not by whoever received it. */
+    selfReported: { type: Boolean, default: false },
     voidedAt: { type: Date, default: null },
     voidedByEmail: { type: String, default: "" },
     voidReason: { type: String, trim: true, maxlength: 300, default: "" },
@@ -42,6 +44,11 @@ const PartyPaymentSchema = new Schema(
     status: { type: String, enum: PAYMENT_STATUSES, required: true, default: "pending" },
     dueDate: { type: Date, default: null },
     note: { type: String, trim: true, maxlength: 300, default: "" },
+    /**
+     * "contri": a share created and kept in sync from the contri split (one per participant).
+     * Editing it by hand turns it into "manual", and the split no longer changes it.
+     */
+    source: { type: String, enum: ["manual", "contri"], default: "manual" },
     /** One share per person and one borrowed-money record per money giver, per party. Null for "other". */
     dedupeKey: { type: String, default: null },
     transactions: { type: [PaymentTransactionSchema], default: [] },

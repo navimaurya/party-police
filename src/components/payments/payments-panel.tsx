@@ -455,6 +455,7 @@ export function PaymentsTable({
                     <p className="text-xs text-muted-foreground">
                       {PAYMENT_KIND_LABELS[p.kind]} → {p.payee.role === "host" ? `${p.payee.name} (party giver)` : payeeLabel({ name: p.payee.name, role: p.payee.role })}
                       {p.dueDate && <> · due {formatDate(p.dueDate)}</>}
+                      {p.auto && <> · from the contri split</>}
                     </p>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{formatRupees(p.total)}</TableCell>
@@ -464,9 +465,9 @@ export function PaymentsTable({
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
                       <Button size="icon-sm" variant="ghost" title="View QR & history" aria-label={`View ${p.payerName}`} onClick={() => setViewing(p._id)}><Eye /></Button>
-                      {p.canRecord && p.due > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> Mark paid</Button>}
+                      {p.canRecord && p.due > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> {p.isMine && !canManage ? "I've paid" : "Mark paid"}</Button>}
                       {canManage && onEdit && <Button size="icon-sm" variant="ghost" aria-label={`Edit ${p.payerName}`} onClick={() => onEdit(p)}><Pencil /></Button>}
-                      {canManage && p.kind !== "lend" && p.paid === 0 && !p.transactions.some((t) => !t.voided) && (
+                      {canManage && p.kind !== "lend" && !p.auto && p.paid === 0 && !p.transactions.some((t) => !t.voided) && (
                         <ConfirmButton trigger={<Button size="icon-sm" variant="ghost" className="text-destructive" aria-label={`Remove ${p.payerName}`}><Trash2 /></Button>} title={`Remove ${p.payerName}'s ${PAYMENT_KIND_LABELS[p.kind].toLowerCase()}?`} description="Nothing was paid against it yet." confirmLabel="Remove" onConfirm={() => remove(p)} />
                       )}
                     </div>
@@ -479,7 +480,7 @@ export function PaymentsTable({
       )}
 
       {viewed && <ViewDialog key={viewed._id} p={viewed} canManage={canManage} onClose={() => setViewing(null)} onPay={() => { setViewing(null); setPaying(viewed._id); }} />}
-      {payingRow && <MarkPaidDialog key={payingRow._id} p={payingRow} onClose={() => setPaying(null)} />}
+      {payingRow && <MarkPaidDialog key={payingRow._id} p={payingRow} self={payingRow.isMine && !canManage} onClose={() => setPaying(null)} />}
     </div>
   );
 }
@@ -531,7 +532,7 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
               <img src={`/api/events/${p.eventId}/payments/${p._id}/qr?v=${p.revision}`} alt={`UPI QR code to pay ${formatRupees(p.due)} to ${p.payee.name}`} className="size-48 rounded-xl border bg-white" />
               <p className="text-center text-sm">Scan to pay <strong>{formatRupees(p.due)}</strong> to <strong>{p.payee.name}</strong><br /><span className="break-all text-xs text-muted-foreground">UPI ID {p.payee.upiId}</span></p>
               <a href={p.upiLink} className="rounded-full bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700 sm:hidden">Pay in a UPI app</a>
-              <p className="text-center text-xs text-muted-foreground">Scanning doesn&apos;t mark it paid. {p.payee.name} or the organizer confirms once the money arrives.</p>
+              <p className="text-center text-xs text-muted-foreground">Scanning doesn&apos;t mark it paid. Once the money is sent, tap <strong>{p.isMine ? "I've paid" : "Mark paid"}</strong>.</p>
             </div>
           ) : (
             <p className="rounded-lg bg-amber-50 p-2 text-sm text-amber-900">{p.payee.name} has no UPI ID yet, so there&apos;s no QR code. Pay them in cash or ask for it.</p>
@@ -551,7 +552,7 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
                     {canManage && !t.voided && <Button size="xs" variant="ghost" className="text-destructive" onClick={() => setVoiding({ id: t._id, reason: "" })}><Ban /> Void</Button>}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Paid {formatDate(t.paidAt)}{t.reference && <> · ref <span className="font-mono">{t.reference}</span></>} · marked by {t.recordedByName || t.recordedByEmail} on {formatDate(t.createdAt)}
+                    Paid {formatDate(t.paidAt)}{t.reference && <> · ref <span className="font-mono">{t.reference}</span></>} · marked by {t.recordedByName || t.recordedByEmail}{t.selfReported && " (self-reported)"} on {formatDate(t.createdAt)}
                   </p>
                   {t.note && <p className="text-xs">{t.note}</p>}
                   {t.voided && <p className="text-xs text-red-700">Voided by {t.voidedByEmail} on {formatDate(t.voidedAt)}: {t.voidReason}</p>}
@@ -569,7 +570,7 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
-          {p.canRecord && p.due > 0 && <Button onClick={onPay}><CheckCircle2 /> Mark paid</Button>}
+          {p.canRecord && p.due > 0 && <Button onClick={onPay}><CheckCircle2 /> {p.isMine && !canManage ? "I've paid" : "Mark paid"}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -578,7 +579,18 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
 
 /* ------------------------------ mark as paid ------------------------------ */
 
-function MarkPaidDialog({ p, onClose }: { p: PaymentView; onClose: () => void }) {
+/** "I've paid": the payer records their own payment (e.g. from the contri card). */
+export function SelfPayButton({ p }: { p: PaymentView }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button size="sm" onClick={() => setOpen(true)}><CheckCircle2 /> I&apos;ve paid</Button>
+      {open && <MarkPaidDialog p={p} self onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: boolean; onClose: () => void }) {
   const router = useRouter();
   const [f, setF] = useState({ amount: String(p.due), method: "upi" as PaymentMethod, reference: "", paidOn: toDateInput(new Date()), note: "" });
   // One key per dialog: a double click or retry of the same submit is recorded once.
@@ -595,7 +607,7 @@ function MarkPaidDialog({ p, onClose }: { p: PaymentView; onClose: () => void })
         method: "POST",
         json: { amount, method: f.method, reference: f.reference, paidOn: f.paidOn, note: f.note, idempotencyKey: key },
       });
-      toast.success(res.duplicate ? "Already recorded" : after === 0 ? `${p.payerName} is fully paid ✅` : `${formatRupees(amount)} recorded. ${formatRupees(after)} still due.`);
+      toast.success(res.duplicate ? "Already recorded" : after === 0 ? (self ? "Marked as paid ✅ Thanks!" : `${p.payerName} is fully paid ✅`) : `${formatRupees(amount)} recorded. ${formatRupees(after)} still due.`);
       onClose();
       router.refresh();
     } catch (err) {
@@ -609,12 +621,16 @@ function MarkPaidDialog({ p, onClose }: { p: PaymentView; onClose: () => void })
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Mark as paid: {p.payerName}</DialogTitle>
-          <DialogDescription>Record money that actually reached {p.payee.name}. {formatRupees(p.due)} is due.</DialogDescription>
+          <DialogTitle>{self ? `I've paid ${p.payee.name}` : `Mark as paid: ${p.payerName}`}</DialogTitle>
+          <DialogDescription>
+            {self
+              ? <>Only after the money has actually left your account. {formatRupees(p.due)} is due. {p.payee.name} and the organizer see that you marked it yourself.</>
+              : <>Record money that actually reached {p.payee.name}. {formatRupees(p.due)} is due.</>}
+          </DialogDescription>
         </DialogHeader>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }}>
           <div className="space-y-1 sm:col-span-2">
-            <Label htmlFor="pay-amount">Amount received (₹) *</Label>
+            <Label htmlFor="pay-amount">{self ? "Amount you paid (₹) *" : "Amount received (₹) *"}</Label>
             <div className="flex gap-2">
               <Input id="pay-amount" type="number" required min={0.01} max={p.due} step="0.01" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
               <Button type="button" variant="outline" onClick={() => setF({ ...f, amount: String(p.due) })}>Full</Button>

@@ -3,11 +3,13 @@ import { AuditLog, PartyMoneyRole, PartyPayment, User } from "@/models";
 import { fromPaise, remainingPaise, storedStatus, toPaise, viewStatus } from "@/lib/payments";
 import { CreateEventSchema, MoneyRoleCreateSchema, PaymentCreateSchema, PaymentRecordSchema, PaymentUpdateSchema, UpdateEventSchema } from "@/lib/validation";
 import { createEvent, deleteEvent, updateEvent } from "@/services/event.service";
+import { contriThankYouEmail } from "@/lib/email-templates";
 import {
   createMoneyRole,
   createPayment,
   deleteMoneyRole,
   deletePayment,
+  getContriPaymentState,
   getPartyPayments,
   getPaymentUpiLink,
   listMyPayments,
@@ -139,12 +141,16 @@ describe("access control", () => {
     const mine = await getPartyPayments(eventId, priya);
     expect(mine.canManage).toBe(false);
     expect(mine.payments.map((x) => x.payerName)).toEqual(["Priya"]);
-    expect(mine.payments[0]).toMatchObject({ isMine: true, canRecord: false });
+    expect(mine.payments[0]).toMatchObject({ isMine: true, canRecord: true });
     expect((await getPartyPayments(eventId, stranger)).payments).toHaveLength(0);
     expect((await listMyPayments(ravi))[0].payments.map((x) => x.total)).toEqual([1500]);
 
     await expect(getPaymentUpiLink(eventId, String(p!._id), ravi)).rejects.toMatchObject({ status: 404 });
-    await expect(recordPayment(eventId, String(p!._id), pay(1000), priya)).rejects.toMatchObject({ status: 403 });
+    // Anyone else can't record Priya's payment...
+    await expect(recordPayment(eventId, String(p!._id), pay(1000), ravi)).rejects.toMatchObject({ status: 403 });
+    // ...but Priya can say she paid, so the giver doesn't have to mark everyone. It's flagged as self-reported.
+    await recordPayment(eventId, String(p!._id), pay(1000), priya);
+    expect((await getPartyPayments(eventId, host)).payments.find((x) => x.payerName === "Priya")).toMatchObject({ status: "paid", upiLink: null, transactions: [{ selfReported: true }] });
     await expect(createPayment(eventId, share("Me", "x@team.test", 1), stranger)).rejects.toMatchObject({ status: 403 });
     await expect(updatePayment(eventId, String(p!._id), PaymentUpdateSchema.parse({ amount: 1 }), priya)).rejects.toMatchObject({ status: 403 });
   });
@@ -207,5 +213,76 @@ describe("lenders & providers", () => {
     await deleteEvent(eventId, boss.id);
     expect(await PartyPayment.countDocuments({})).toBe(0);
     expect(await PartyMoneyRole.countDocuments({})).toBe(0);
+  });
+});
+
+describe("contri parties", () => {
+  const five = [
+    { name: "Host", email: "host@team.test" },
+    { name: "Priya", email: "priya@team.test" },
+    { name: "Ravi", email: "ravi@team.test" },
+    { name: "Neha", email: "neha@team.test" },
+    { name: "Arjun", email: "arjun@team.test" },
+  ];
+  const contri = (over: Record<string, unknown> = {}) => ({ category: "contri", participants: five, contri: { totalAmount: 100 }, ...over });
+
+  it("splits automatically: one share per participant (not the host), paid to the host, following the split", async () => {
+    const { boss, host, eventId } = await setup(contri());
+    let rows = (await getPartyPayments(eventId, host)).payments;
+    expect(rows.map((r) => [r.payerName, r.total, r.payee.role, r.auto])).toEqual([
+      ["Priya", 20, "host", true],
+      ["Ravi", 20, "host", true],
+      ["Neha", 20, "host", true],
+      ["Arjun", 20, "host", true],
+    ]);
+    expect(rows[0].upiLink).toContain("pa=host%40okhdfc&pn=Host&am=20.00");
+    await expect(deletePayment(eventId, rows[0]._id, host)).rejects.toMatchObject({ status: 400 });
+
+    // Ravi pays 20; then the split changes and Arjun leaves.
+    await recordPayment(eventId, rows[1]._id, pay(), host);
+    await updateEvent(eventId, UpdateEventSchema.parse({ participants: five.filter((p) => p.name !== "Arjun"), contri: { totalAmount: 40 } }), boss.id);
+    rows = (await getPartyPayments(eventId, host)).payments;
+    // 40 / 4 people = 10 each; Ravi already paid 20, so his share stays 20 (never a negative due).
+    expect(rows.map((r) => [r.payerName, r.total, r.due])).toEqual([
+      ["Priya", 10, 10],
+      ["Ravi", 20, 0],
+      ["Neha", 10, 10],
+    ]);
+
+    // Edited by hand: the split leaves it alone.
+    await updatePayment(eventId, rows[0]._id, PaymentUpdateSchema.parse({ amount: 15 }), host);
+    await updateEvent(eventId, UpdateEventSchema.parse({ contri: { totalAmount: 80 } }), boss.id);
+    rows = (await getPartyPayments(eventId, host)).payments;
+    expect(rows.map((r) => [r.payerName, r.total, r.auto])).toEqual([
+      ["Priya", 15, false],
+      ["Ravi", 20, true],
+      ["Neha", 20, true],
+    ]);
+  });
+
+  it("hides the QR for whoever has paid, and everywhere once everyone has", async () => {
+    const { host, priya, ravi, eventId } = await setup(contri({ participants: five.slice(0, 3), contri: { totalAmount: 150 } }));
+    let st = await getContriPaymentState(eventId, priya);
+    expect(st).toMatchObject({ shares: 2, paidShares: 0, allPaid: false, mine: { payerName: "Priya", due: 50, canRecord: true } });
+    expect(st!.mine!.upiLink).toContain("am=50.00");
+
+    await recordPayment(eventId, st!.mine!._id, pay(20), priya); // partial, self-marked
+    expect((await getContriPaymentState(eventId, priya))!.mine).toMatchObject({ due: 30, upiLink: expect.stringContaining("am=30.00") });
+    await recordPayment(eventId, st!.mine!._id, pay(), priya);
+    st = await getContriPaymentState(eventId, priya);
+    expect(st).toMatchObject({ paidShares: 1, allPaid: false, mine: { due: 0, upiLink: null } });
+
+    const raviShare = (await getContriPaymentState(eventId, ravi))!.mine!;
+    await recordPayment(eventId, raviShare._id, pay(), host);
+    expect(await getContriPaymentState(eventId, null)).toMatchObject({ allPaid: true, paidShares: 2 });
+
+    const split = { total: 150, headcount: 3, perHead: 50, payers: 2, upiId: "host@okhdfc", upiLink: "upi://pay?pa=host%40okhdfc&am=50.00" };
+    const event = { title: "Pizza", organizerName: "Host", eventDate: new Date(), _id: eventId, category: "contri" };
+    const open = contriThankYouEmail(event as never, split, [], Buffer.from("png"));
+    const settled = contriThankYouEmail(event as never, split, [], Buffer.from("png"), true);
+    expect(open.attachments).toHaveLength(1);
+    expect(settled.attachments).toBeUndefined();
+    expect(settled.html).not.toContain("upi://");
+    expect(settled.html).toContain("All settled");
   });
 });

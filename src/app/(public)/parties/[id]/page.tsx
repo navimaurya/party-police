@@ -14,6 +14,8 @@ import { getEvent, getEventContriSplit } from "@/services/event.service";
 import { ContriPaymentCard } from "@/components/shared/contri-payment-card";
 import { listBills } from "@/services/bill.service";
 import { listActiveDiscounts } from "@/services/discount.service";
+import { getContriPaymentState } from "@/services/payment.service";
+import { getSessionUser } from "@/lib/auth";
 
 export default function PartyDetailPage(props: PageProps<"/parties/[id]">) {
   return (
@@ -40,10 +42,13 @@ async function PartyDetail({ params }: { params: PageProps<"/parties/[id]">["par
   await connection();
   const { id } = await params;
   const event = serialize(await load(id));
-  const [bills, deals, split] = await Promise.all([
+  const viewer = await getSessionUser();
+  const [bills, deals, split, contriState] = await Promise.all([
     listBills({ eventId: id, admin: false }),
     event.status === "upcoming" ? listActiveDiscounts({ category: event.category, venue: event.location || undefined }) : Promise.resolve([]),
     getEventContriSplit(id, { admin: false }),
+    // Paid shares hide their QR; a fully paid party shows none at all.
+    event.category === "contri" ? getContriPaymentState(id, viewer && !viewer.mustChangePassword ? viewer : null) : Promise.resolve(null),
   ]);
   const files = serialize(bills.items);
   const discounts = serialize(deals);
@@ -81,7 +86,7 @@ async function PartyDetail({ params }: { params: PageProps<"/parties/[id]">["par
         {event.status === "cancelled" && <p className="mt-6 rounded-xl bg-zinc-100 p-3 text-zinc-700">😢 Cancelled. The debt, however, remains on record. 📒</p>}
       </div>
 
-      {split && <ContriPaymentCard split={split} hostName={event.organizerName} />}
+      {split && <ContriPaymentCard split={split} hostName={event.organizerName} state={contriState} />}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {event.participants?.length > 0 && (

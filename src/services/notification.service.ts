@@ -24,6 +24,7 @@ import { hashPassword, revokeSessions, superAdminEmails } from "./auth.service";
 import { randomToken } from "@/lib/crypto";
 import { computeContriSplit, type ContriInput } from "@/lib/contri";
 import { upiQrPng } from "@/lib/upi-qr";
+import { getContriPaymentState } from "./payment.service";
 import type { NotificationType, UserRole } from "@/types";
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
@@ -120,8 +121,10 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
           // Everyone paid: a "thank yourselves" email with each person's share and a UPI QR to pay the host.
           const split = await contriSplitFor(event);
           if (split) {
-            const qr = split.upiLink ? await upiQrPng(split.upiLink) : null;
-            return { to: await participantRecipients(settings, event), rendered: T.contriThankYouEmail(event, split, bills, qr) };
+            // Everyone already marked as paid: the email carries no QR at all.
+            const settled = !!(await getContriPaymentState(String(event._id)))?.allPaid;
+            const qr = split.upiLink && !settled ? await upiQrPng(split.upiLink) : null;
+            return { to: await participantRecipients(settings, event), rendered: T.contriThankYouEmail(event, split, bills, qr, settled) };
           }
         }
         return { to: await to(), rendered: T.thankYouEmail(event, bills) };

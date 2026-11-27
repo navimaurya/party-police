@@ -326,7 +326,12 @@ ${button}
  * Thank-you for a CONTRI party: everyone paid, so everyone thanks... themselves.
  * Carries the split and a UPI QR for each person's share.
  */
-export function contriThankYouEmail(e: EventLike, s: ContriSplitLike, bills: { name: string; url: string }[], qrPng?: Buffer | null): Rendered {
+export function contriThankYouEmail(e: EventLike, s: ContriSplitLike, bills: { name: string; url: string }[], qrPng?: Buffer | null, settled = false): Rendered {
+  // Everyone already paid (recorded in Payments): no QR, no "pay today".
+  if (settled) {
+    qrPng = null;
+    s = { ...s, upiLink: null };
+  }
   const subject = `🤝 Thank you... to yourself! ${e.title} is settled (almost)`;
   const billsHtml = bills.length
     ? `<p style="margin:18px 0 6px;font:600 16px ${HEADING_FONT}">🧾 Proof the money was spent on food</p><ul style="margin:0;padding-left:20px">${bills
@@ -349,10 +354,10 @@ export function contriThankYouEmail(e: EventLike, s: ContriSplitLike, bills: { n
         ["📅 Date", fmtDate(e.eventDate)],
         ["💳 Pay to", s.upiId ? `${e.organizerName} (${s.upiId})` : e.organizerName],
       ]) +
-      contriPayCard(e, s, !!qrPng) +
+      (settled ? callout(`✅ <strong>All settled.</strong> Everyone has already paid ${escapeHtml(e.organizerName)} back. Nothing to scan.`) : contriPayCard(e, s, !!qrPng)) +
       p(`${escapeHtml(e.organizerName)}: you're the host, so you don't pay yourself. Sit back and watch the notifications roll in. 📲`) +
       billsHtml +
-      p("Remember: friendships end over unpaid contri. Pay today. 😇"),
+      p(settled ? "Friendships intact. Contri paid. Legends, all of you. 😇" : "Remember: friendships end over unpaid contri. Pay today. 😇"),
     cta: { label: "View party & QR", url: eventUrl(e) },
   });
   const text = [
@@ -365,7 +370,7 @@ export function contriThankYouEmail(e: EventLike, s: ContriSplitLike, bills: { n
     `Split between: ${s.headcount} people`,
     `Your share: ${rupees(s.perHead)}`,
     s.upiId ? `Pay to: ${e.organizerName} (UPI: ${s.upiId})` : `Pay to: ${e.organizerName}`,
-    ...(s.upiLink ? [`UPI link: ${s.upiLink}`] : []),
+    ...(settled ? ["All settled: everyone has already paid. Nothing to pay."] : s.upiLink ? [`UPI link: ${s.upiLink}`] : []),
     ...(bills.length ? ["", "Bills:", ...bills.map((b) => `- ${b.name}: ${b.url}`)] : []),
     "",
     `Party page (with the QR): ${eventUrl(e)}`,
