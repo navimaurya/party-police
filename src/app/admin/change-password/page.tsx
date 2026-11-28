@@ -22,7 +22,7 @@ export default function ChangePasswordPage() {
             <Greeting />
           </Suspense>
         </div>
-        <ChangePasswordForm redirectTo={HOME_PATH} currentLabel="One-time password" />
+        <ChangePasswordForm redirectTo={HOME_PATH} requireCurrent={false} />
       </div>
     </main>
   );
@@ -34,7 +34,7 @@ async function Greeting() {
   if (!user.mustChangePassword) redirect("/admin/profile");
   return (
     <p className="text-sm text-muted-foreground">
-      Hi {user.name.split(/\s+/)[0]}! You signed in with a one-time password. Pick a new one to continue. The one-time password stops working after this.
+      Hi {user.name.split(/\s+/)[0]}! You signed in with a one-time password. You&apos;re signed in, so there&apos;s no need to type it again. Just choose your new password to continue.
     </p>
   );
 }

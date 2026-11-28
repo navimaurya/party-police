@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { api, toastError } from "@/lib/api-client";
 import { toDateInput } from "@/lib/format";
 import { OccasionsEditor, occasionsToPayload, toOccasionRows } from "@/components/admin/occasions-editor";
+import { PasswordStrength } from "@/components/shared/password-strength";
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, meetsPasswordPolicy } from "@/lib/password-policy";
 
 export type ProfileData = {
   name: string;
@@ -88,16 +90,20 @@ export function ProfileForm({ profile }: { profile: ProfileData }) {
   );
 }
 
-/** `redirectTo`: where to go after a successful change (the forced one-time-password flow). */
-export function ChangePasswordForm({ redirectTo, currentLabel = "Current password" }: { redirectTo?: string; currentLabel?: string } = {}) {
+/**
+ * `redirectTo`: where to go after a successful change (the forced one-time-password flow).
+ * `requireCurrent={false}`: right after a one-time-password sign-in only the new password is asked.
+ */
+export function ChangePasswordForm({ redirectTo, requireCurrent = true }: { redirectTo?: string; requireCurrent?: boolean } = {}) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [v, setV] = useState({ currentPassword: "", newPassword: "", confirm: "" });
   const mismatch = v.confirm.length > 0 && v.newPassword !== v.confirm;
+  const weak = !meetsPasswordPolicy(v.newPassword);
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Password</CardTitle>
+        <CardTitle>{requireCurrent ? "Password" : "New password"}</CardTitle>
         <CardDescription>Changing it signs you out on all other devices.</CardDescription>
       </CardHeader>
       <CardContent>
@@ -105,11 +111,11 @@ export function ChangePasswordForm({ redirectTo, currentLabel = "Current passwor
           className="grid gap-4"
           onSubmit={async (e) => {
             e.preventDefault();
-            if (mismatch) return;
+            if (mismatch || weak) return;
             setBusy(true);
             try {
-              await api("/api/profile/password", { method: "POST", json: { currentPassword: v.currentPassword, newPassword: v.newPassword } });
-              toast.success("Password changed. Other sessions were signed out.");
+              await api("/api/profile/password", { method: "POST", json: { ...(requireCurrent ? { currentPassword: v.currentPassword } : {}), newPassword: v.newPassword } });
+              toast.success(requireCurrent ? "Password changed. Other sessions were signed out." : "Password set. Welcome in! 🎉");
               setV({ currentPassword: "", newPassword: "", confirm: "" });
               if (redirectTo) {
                 router.replace(redirectTo);
@@ -122,14 +128,34 @@ export function ChangePasswordForm({ redirectTo, currentLabel = "Current passwor
             }
           }}
         >
-          <div className="space-y-1.5"><Label htmlFor="cp-current">{currentLabel}</Label><Input id="cp-current" type="password" required autoComplete="current-password" value={v.currentPassword} onChange={(e) => setV({ ...v, currentPassword: e.target.value })} /></div>
-          <div className="space-y-1.5"><Label htmlFor="cp-new">New password</Label><Input id="cp-new" type="password" required minLength={10} maxLength={200} autoComplete="new-password" value={v.newPassword} onChange={(e) => setV({ ...v, newPassword: e.target.value })} /><p className="text-xs text-muted-foreground">At least 10 characters.</p></div>
-          <div className="space-y-1.5"><Label htmlFor="cp-confirm">Confirm new password</Label><Input id="cp-confirm" type="password" required minLength={10} maxLength={200} autoComplete="new-password" aria-invalid={mismatch} value={v.confirm} onChange={(e) => setV({ ...v, confirm: e.target.value })} />{mismatch && <p className="text-xs text-destructive">Passwords don&apos;t match.</p>}</div>
+          {requireCurrent && (
+            <div className="space-y-1.5"><Label htmlFor="cp-current">Current password</Label><Input id="cp-current" type="password" required autoComplete="current-password" value={v.currentPassword} onChange={(e) => setV({ ...v, currentPassword: e.target.value })} /></div>
+          )}
+          <NewPasswordFields value={v.newPassword} confirm={v.confirm} onChange={(newPassword, confirm) => setV({ ...v, newPassword, confirm })} />
           <div className="flex justify-end">
-            <Button type="submit" disabled={busy || mismatch}>{busy && <Loader2 className="animate-spin" />} Update password</Button>
+            <Button type="submit" disabled={busy || mismatch || weak}>{busy && <Loader2 className="animate-spin" />} {requireCurrent ? "Update password" : "Set password & continue"}</Button>
           </div>
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/** "New password" + "Confirm" with the live strength meter and policy checklist. */
+export function NewPasswordFields({ value, confirm, onChange }: { value: string; confirm: string; onChange: (value: string, confirm: string) => void }) {
+  const mismatch = confirm.length > 0 && value !== confirm;
+  return (
+    <>
+      <div className="space-y-1.5">
+        <Label htmlFor="cp-new">New password</Label>
+        <Input id="cp-new" type="password" required minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_LENGTH} autoComplete="new-password" aria-describedby="cp-strength" value={value} onChange={(e) => onChange(e.target.value, confirm)} />
+        <PasswordStrength id="cp-strength" password={value} />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="cp-confirm">Confirm new password</Label>
+        <Input id="cp-confirm" type="password" required minLength={PASSWORD_MIN_LENGTH} maxLength={PASSWORD_MAX_LENGTH} autoComplete="new-password" aria-invalid={mismatch} value={confirm} onChange={(e) => onChange(value, e.target.value)} />
+        {mismatch && <p className="text-xs text-destructive">Passwords don&apos;t match.</p>}
+      </div>
+    </>
   );
 }

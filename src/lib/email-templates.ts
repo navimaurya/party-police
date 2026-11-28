@@ -742,3 +742,160 @@ export function testEmail(): Rendered {
     text: "SMTP works! Nobody escapes the Party Committee.",
   };
 }
+
+/* ------------------------------ forgot password ----------------------------- */
+
+/** A "forgot password" link, valid for `minutes`. The link is made right before sending. */
+export function passwordResetEmail(u: { name: string; email: string }, link: string, minutes: number): Rendered {
+  const first = firstName(u.name);
+  const subject = "🔐 Reset your Party Police password";
+  const html = layout({
+    eyebrow: "Password reset",
+    title: `Forgot your password, ${first}?`,
+    preheader: `Choose a new one. The link works for ${minutes} minutes.`,
+    body:
+      p(`Hi ${escapeHtml(first)},`) +
+      p(`Someone (hopefully you) asked to reset the password for ${strong(u.email)}. Click the button below to choose a new one.`) +
+      callout(`The link works <strong>once</strong>, for <strong>${minutes} minutes</strong>. Setting a new password signs you out everywhere.`) +
+      p(`Button not working? Copy this link into your browser:<br><a href="${escapeHtml(link)}" style="color:${C.primary};word-break:break-all">${escapeHtml(link)}</a>`) +
+      p("Didn't ask for this? Ignore this email. Your password stays the same."),
+    cta: { label: "Choose a new password", url: link },
+    signoff: "Party Police HQ 🚨",
+  });
+  const text = [
+    `Hi ${first},`,
+    "",
+    `Someone (hopefully you) asked to reset the password for ${u.email}.`,
+    `Choose a new password here (works once, for ${minutes} minutes):`,
+    link,
+    "",
+    "Didn't ask for this? Ignore this email. Your password stays the same.",
+    textSignoff("Party Police HQ 🚨"),
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/* -------------------------------- occasions -------------------------------- */
+
+export type OccasionLike = {
+  userName: string;
+  personName: string;
+  relation: string;
+  occasion: string;
+  label?: string;
+  /** Years completed today (married, at the company). Not shown for birthdays. */
+  years: number | null;
+};
+
+const OCCASION_EMOJI: Record<string, string> = { Birthday: "🎂", Anniversary: "💍", "Work anniversary": "💼", Other: "🎉" };
+const occasionName = (o: OccasionLike) => (o.occasion === "Other" ? o.label || "special day" : o.occasion.toLowerCase());
+const ordinal = (n: number) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th")}`;
+/** "5th work anniversary", "birthday" (ages are nobody's business). */
+const occasionWithYears = (o: OccasionLike) => (o.years && o.occasion !== "Birthday" ? `${ordinal(o.years)} ${occasionName(o)}` : occasionName(o));
+const isSelf = (o: OccasionLike) => o.relation === "Self";
+
+/** To the user, on their own (or their family's) special day. */
+export function occasionWishEmail(u: { name: string }, o: OccasionLike): Rendered {
+  const first = firstName(u.name);
+  const emoji = OCCASION_EMOJI[o.occasion] ?? "🎉";
+  const what = occasionWithYears(o);
+  const self = isSelf(o);
+  const subject = self ? `${emoji} Happy ${what}, ${first}!` : `${emoji} Happy ${what} to your ${o.relation.toLowerCase()}, ${o.personName}!`;
+  const title = self ? `Happy ${what}, ${first}! ${emoji}` : `Happy ${what}, ${o.personName}! ${emoji}`;
+  const line =
+    o.occasion === "Birthday"
+      ? "Another trip around the sun, and you made it look easy. The whole Party Police wishes you a fantastic day. 🥳"
+      : o.occasion === "Work anniversary"
+        ? `${o.years ? `${o.years} year${o.years === 1 ? "" : "s"}` : "Another year"} of putting up with us. Thank you for everything you do. 🙌`
+        : o.occasion === "Anniversary"
+          ? "Wishing you love, laughter and many more years of deciding where to eat. 💞"
+          : "Wishing you a wonderful day from all of us. 🎉";
+  const html = layout({
+    eyebrow: "Special day",
+    title,
+    preheader: self ? `The whole team is wishing you a happy ${what}.` : `Please pass on our wishes to ${o.personName}.`,
+    body:
+      p(`Hi ${escapeHtml(first)},`) +
+      (self ? p(line) : p(`Today is ${strong(o.personName)}'s ${escapeHtml(what)}! Please pass on the warmest wishes from the whole team. ${emoji}`)) +
+      p("PS: we hear celebrations go better with cake. Just saying. 🍰"),
+    cta: { label: "Visit Party HQ", url: `${appUrl()}/parties` },
+  });
+  const text = [
+    `Hi ${first},`,
+    "",
+    self ? line : `Today is ${o.personName}'s ${what}! Please pass on the warmest wishes from the whole team. ${emoji}`,
+    "",
+    "PS: we hear celebrations go better with cake. Just saying. 🍰",
+    textSignoff(),
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/** To everyone else: today is someone's special day, go wish them. */
+export function occasionReminderEmail(o: OccasionLike): Rendered {
+  const first = firstName(o.userName);
+  const emoji = OCCASION_EMOJI[o.occasion] ?? "🎉";
+  const what = occasionWithYears(o);
+  const self = isSelf(o);
+  const subject = self ? `${emoji} Today is ${o.userName}'s ${what}! Don't forget to wish` : `${emoji} Today is ${o.personName}'s ${what} (${o.userName}'s ${o.relation.toLowerCase()})`;
+  const html = layout({
+    eyebrow: "Friendly reminder",
+    title: self ? `It's ${first}'s ${what}! ${emoji}` : `${o.personName}'s ${what} ${emoji}`,
+    preheader: `Take a minute today to wish ${first}.`,
+    body:
+      p("Hey Everyone!") +
+      (self
+        ? p(`Today is ${strong(o.userName)}'s ${escapeHtml(what)}. Drop a message, a call or a high five, and make ${escapeHtml(first)}'s day. 🙌`)
+        : p(`Today is ${strong(o.personName)}'s ${escapeHtml(what)}: ${strong(o.userName)}'s ${escapeHtml(o.relation.toLowerCase())}. Send ${escapeHtml(first)} your wishes. 💐`)) +
+      (self && o.occasion === "Birthday" ? p("And per the Party Police rules, a birthday may come with a party. We're just keeping notes. 😏") : ""),
+    cta: { label: "See upcoming occasions", url: `${appUrl()}/admin/occasions` },
+  });
+  const text = [
+    "Hey Everyone!",
+    "",
+    self ? `Today is ${o.userName}'s ${what}. Make ${first}'s day: send your wishes! 🙌` : `Today is ${o.personName}'s ${what} (${o.userName}'s ${o.relation.toLowerCase()}). Send ${first} your wishes. 💐`,
+    textSignoff(),
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/* ---------------------------- payment approvals ---------------------------- */
+
+/** To whoever received the money (and the admins): the payer says they paid; please confirm. */
+export function paymentApprovalRequestEmail(r: {
+  payerName: string;
+  payeeName: string;
+  amount: number;
+  method: string;
+  reference: string;
+  kind: string;
+  event: EventLike;
+}): Rendered {
+  const what = r.kind === "lend" ? "repaid the money borrowed" : r.kind === "share" ? "paid their share" : "made a payment";
+  const subject = `⏳ Please confirm: ${r.payerName} says they paid ${rupees(r.amount)} to ${r.payeeName}`;
+  const url = `${appUrl()}/admin/payments`;
+  const html = layout({
+    eyebrow: "Payment approval",
+    title: `Did ${r.payeeName} get ${rupees(r.amount)}?`,
+    preheader: `${r.payerName} ${what} for ${r.event.title}. It counts once it's approved.`,
+    body:
+      p(`${strong(r.payerName)} says they ${what} for ${strong(r.event.title)}.`) +
+      details([
+        ["💸 Amount", rupees(r.amount)],
+        ["➡️ Paid to", r.payeeName],
+        ["💳 Method", r.method.replace("_", " ")],
+        ["🔖 Reference", r.reference || null],
+      ]) +
+      callout(`Nothing is counted until <strong>${escapeHtml(r.payeeName)}</strong> or an admin approves it. Check that the money arrived, then approve or reject it in Party HQ.`),
+    cta: { label: "Review the payment", url },
+    signoff: "Party Police HQ 🚨",
+  });
+  const text = [
+    `${r.payerName} says they ${what} for ${r.event.title}.`,
+    `Amount: ${rupees(r.amount)} · Paid to: ${r.payeeName} · Method: ${r.method}${r.reference ? ` · Ref: ${r.reference}` : ""}`,
+    "",
+    `It's counted only once ${r.payeeName} or an admin approves it: ${url}`,
+    textSignoff("Party Police HQ 🚨"),
+  ].join("\n");
+  return { subject, html, text };
+}

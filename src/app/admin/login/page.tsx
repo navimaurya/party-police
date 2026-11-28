@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import Image from "next/image";
 import { LoginForm } from "./login-form";
@@ -13,7 +14,10 @@ export default function LoginPage() {
           <h1 className="text-2xl font-bold">Party Committee HQ</h1>
           <p className="text-sm text-muted-foreground">Sign in with your email and password. Party defaulters, turn back now. 🚨</p>
         </div>
-        <LoginForm />
+        {/* Suspense: the form reads ?reset=1 (shown after a password reset). */}
+        <Suspense fallback={<div className="h-56 animate-pulse rounded-xl bg-muted" />}>
+          <LoginForm />
+        </Suspense>
       </div>
     </main>
   );

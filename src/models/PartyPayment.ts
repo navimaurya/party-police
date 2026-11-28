@@ -17,6 +17,18 @@ const PaymentTransactionSchema = new Schema(
     idempotencyKey: { type: String, required: true },
     /** Marked paid by the payer themselves ("I've paid"), not by whoever received it. */
     selfReported: { type: Boolean, default: false },
+    /**
+     * "pending": the payer says they paid; it counts only once whoever received the money (or an
+     * admin) approves it. "confirmed": counts towards paidPaise. "rejected": never counted.
+     * Older transactions have no value = confirmed.
+     */
+    approval: { type: String, enum: ["confirmed", "pending", "rejected"], default: "confirmed" },
+    reviewedAt: { type: Date, default: null },
+    reviewedByEmail: { type: String, default: "" },
+    reviewedByName: { type: String, default: "" },
+    reviewNote: { type: String, trim: true, maxlength: 300, default: "" },
+    /** Created by "Change status" rather than an actual payment entry. */
+    adjustment: { type: Boolean, default: false },
     voidedAt: { type: Date, default: null },
     voidedByEmail: { type: String, default: "" },
     voidReason: { type: String, trim: true, maxlength: 300, default: "" },

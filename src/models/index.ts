@@ -12,3 +12,4 @@ export * from "./AppSettings";
 export * from "./AuditLog";
 export * from "./PartyMoneyRole";
 export * from "./PartyPayment";
+export * from "./PasswordResetToken";

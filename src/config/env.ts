@@ -7,13 +7,17 @@ import { z } from "zod";
  * NEVER import this file from a Client Component.
  */
 const EnvSchema = z.object({
-  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
   APP_URL: z.string().url().default("http://localhost:3000"),
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
   ADMIN_EMAIL: z.string().email().optional().or(z.literal("")),
   ADMIN_PASSWORD: z.string().optional(),
   AUTH_SECRET: z.string().min(32, "AUTH_SECRET must be at least 32 characters"),
-  FILE_SIGNING_SECRET: z.string().min(32, "FILE_SIGNING_SECRET must be at least 32 characters"),
+  FILE_SIGNING_SECRET: z
+    .string()
+    .min(32, "FILE_SIGNING_SECRET must be at least 32 characters"),
   SMTP_HOST: z.string().optional().default(""),
   SMTP_PORT: z.coerce.number().int().positive().optional().default(587),
   SMTP_USER: z.string().optional().default(""),
@@ -29,14 +33,22 @@ const EnvSchema = z.object({
     .transform((v) => (v === undefined ? undefined : v === "true")),
   CRON_SECRET: z.string().optional().default(""),
   STORAGE_PATH: z.string().default("./storage"),
-  MAX_FILE_SIZE: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  MAX_FILE_SIZE: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10 * 1024 * 1024),
   RUN_WORKER_IN_APP: z
     .enum(["true", "false"])
     .optional()
     .default("true")
     .transform((v) => v === "true"),
   WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(1000).default(15000),
-  THANK_YOU_DELAY_MS: z.coerce.number().int().min(0).default(5 * 60 * 1000),
+  THANK_YOU_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(5 * 60 * 1000),
   /** IANA timezone used for "party day" and the daily 9 AM emails. */
   APP_TIMEZONE: z
     .string()
@@ -59,7 +71,9 @@ export function env(): Env {
   if (cached) return cached;
   const parsed = EnvSchema.safeParse(process.env);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
     throw new Error(`Invalid environment configuration: ${issues}`);
   }
   cached = parsed.data;
@@ -68,7 +82,10 @@ export function env(): Env {
 
 /** Absolute path to the private storage root. */
 export function storageRoot(): string {
-  return path.resolve(/*turbopackIgnore: true*/ process.cwd(), env().STORAGE_PATH);
+  return path.resolve(
+    /*turbopackIgnore: true*/ process.cwd(),
+    env().STORAGE_PATH,
+  );
 }
 
 /** For tests: reset cached env after mutating process.env. */

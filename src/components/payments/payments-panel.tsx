@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Ban, CheckCircle2, Eye, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Ban, Check, CheckCircle2, Eye, Hourglass, Loader2, Pencil, Plus, RefreshCw, Send, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,9 +23,11 @@ import {
   PAYMENT_METHOD_LABELS,
   PAYMENT_METHODS,
   PAYMENT_STATUS_LABELS,
+  PAYMENT_STATUSES,
   PAYMENT_VIEW_STATUSES,
   type MoneyRole,
   type PaymentMethod,
+  type PaymentStatus,
   type PaymentViewStatus,
 } from "@/types";
 
@@ -461,13 +463,18 @@ export function PaymentsTable({
                   <TableCell className="text-right tabular-nums">{formatRupees(p.total)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatRupees(p.paid)}</TableCell>
                   <TableCell className={cn("text-right font-semibold tabular-nums", p.due > 0 ? "text-red-700" : "text-emerald-700")}>{formatRupees(p.due)}</TableCell>
-                  <TableCell><PaymentStatusBadge status={p.status} /></TableCell>
+                  <TableCell>
+                    <PaymentStatusBadge status={p.status} />
+                    {p.awaitingApproval > 0 && <p className="mt-1 text-xs font-medium text-amber-700">⏳ {formatRupees(p.awaitingApproval)} awaiting approval</p>}
+                  </TableCell>
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
+                    <div className="flex flex-wrap justify-end gap-1">
                       <Button size="icon-sm" variant="ghost" title="View QR & history" aria-label={`View ${p.payerName}`} onClick={() => setViewing(p._id)}><Eye /></Button>
-                      {p.canRecord && p.due > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> {p.isMine && !canManage ? "I've paid" : "Mark paid"}</Button>}
+                      {p.canConfirm && p.awaitingApproval > 0 && <Button size="xs" className="bg-amber-500 text-white hover:bg-amber-600" onClick={() => setViewing(p._id)}><Hourglass /> Review</Button>}
+                      {p.canConfirm && p.due > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><CheckCircle2 className="text-emerald-600" /> Mark paid</Button>}
+                      {p.canRequest && p.requestable > 0 && <Button size="xs" variant="outline" onClick={() => setPaying(p._id)}><Send className="text-primary" /> I&apos;ve paid</Button>}
                       {canManage && onEdit && <Button size="icon-sm" variant="ghost" aria-label={`Edit ${p.payerName}`} onClick={() => onEdit(p)}><Pencil /></Button>}
-                      {canManage && p.kind !== "lend" && !p.auto && p.paid === 0 && !p.transactions.some((t) => !t.voided) && (
+                      {canManage && p.kind !== "lend" && !p.auto && p.paid === 0 && !p.transactions.some((t) => !t.voided && t.approval !== "rejected") && (
                         <ConfirmButton trigger={<Button size="icon-sm" variant="ghost" className="text-destructive" aria-label={`Remove ${p.payerName}`}><Trash2 /></Button>} title={`Remove ${p.payerName}'s ${PAYMENT_KIND_LABELS[p.kind].toLowerCase()}?`} description="Nothing was paid against it yet." confirmLabel="Remove" onConfirm={() => remove(p)} />
                       )}
                     </div>
@@ -479,26 +486,30 @@ export function PaymentsTable({
         </div>
       )}
 
-      {viewed && <ViewDialog key={viewed._id} p={viewed} canManage={canManage} onClose={() => setViewing(null)} onPay={() => { setViewing(null); setPaying(viewed._id); }} />}
-      {payingRow && <MarkPaidDialog key={payingRow._id} p={payingRow} self={payingRow.isMine && !canManage} onClose={() => setPaying(null)} />}
+      {viewed && <ViewDialog key={viewed._id} p={viewed} onClose={() => setViewing(null)} onPay={() => { setViewing(null); setPaying(viewed._id); }} />}
+      {payingRow && <MarkPaidDialog key={payingRow._id} p={payingRow} self={!payingRow.canConfirm} onClose={() => setPaying(null)} />}
     </div>
   );
 }
 
 /* ------------------------------ view (QR + history) ------------------------------ */
 
-function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManage: boolean; onClose: () => void; onPay: () => void }) {
+const APPROVAL_STYLE = { pending: "border-amber-300 bg-amber-50", rejected: "opacity-60", confirmed: "" } as const;
+
+function ViewDialog({ p, onClose, onPay }: { p: PaymentView; onClose: () => void; onPay: () => void }) {
   const router = useRouter();
   const [voiding, setVoiding] = useState<{ id: string; reason: string } | null>(null);
+  const [rejecting, setRejecting] = useState<{ id: string; note: string } | null>(null);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  async function voidTx() {
-    if (!voiding) return;
+  async function run(url: string, json: unknown, done: string) {
     setBusy(true);
     try {
-      await api(`/api/events/${p.eventId}/payments/${p._id}/transactions/${voiding.id}/void`, { method: "POST", json: { reason: voiding.reason } });
-      toast.success("Payment voided");
+      await api(url, { method: "POST", json });
+      toast.success(done);
       setVoiding(null);
+      setRejecting(null);
       router.refresh();
     } catch (err) {
       toastError(err);
@@ -506,6 +517,7 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
       setBusy(false);
     }
   }
+  const txUrl = (id: string, action: string) => `/api/events/${p.eventId}/payments/${p._id}/transactions/${id}/${action}`;
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -522,17 +534,24 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
           <div className="rounded-lg bg-muted/50 p-2"><p className="text-xs text-muted-foreground">Paid</p><p className="font-semibold">{formatRupees(p.paid)}</p></div>
           <div className="rounded-lg bg-muted/50 p-2"><p className="text-xs text-muted-foreground">Due</p><p className="font-semibold text-red-700">{formatRupees(p.due)}</p></div>
         </div>
-        <div className="flex items-center gap-2"><PaymentStatusBadge status={p.status} />{p.note && <span className="text-sm text-muted-foreground">{p.note}</span>}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <PaymentStatusBadge status={p.status} />
+          {p.awaitingApproval > 0 && <span className="text-xs font-medium text-amber-700">⏳ {formatRupees(p.awaitingApproval)} awaiting approval by {p.payee.name} or an admin</span>}
+          {p.note && <span className="text-sm text-muted-foreground">{p.note}</span>}
+          {p.canConfirm && <Button size="xs" variant="outline" className="ml-auto" onClick={() => setStatusOpen(true)}><RefreshCw /> Change status</Button>}
+        </div>
 
-        {p.due > 0 && (
+        {p.requestable > 0 && (
           p.upiLink ? (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-teal-200 bg-teal-50/40 p-4">
               {/* Generated by our server for exactly the outstanding amount; refreshed when it changes. */}
               {/* eslint-disable-next-line @next/next/no-img-element -- authenticated API image, not next/image */}
-              <img src={`/api/events/${p.eventId}/payments/${p._id}/qr?v=${p.revision}`} alt={`UPI QR code to pay ${formatRupees(p.due)} to ${p.payee.name}`} className="size-48 rounded-xl border bg-white" />
-              <p className="text-center text-sm">Scan to pay <strong>{formatRupees(p.due)}</strong> to <strong>{p.payee.name}</strong><br /><span className="break-all text-xs text-muted-foreground">UPI ID {p.payee.upiId}</span></p>
+              <img src={`/api/events/${p.eventId}/payments/${p._id}/qr?v=${p.revision}`} alt={`UPI QR code to pay ${formatRupees(p.requestable)} to ${p.payee.name}`} className="size-48 rounded-xl border bg-white" />
+              <p className="text-center text-sm">Scan to pay <strong>{formatRupees(p.requestable)}</strong> to <strong>{p.payee.name}</strong><br /><span className="break-all text-xs text-muted-foreground">UPI ID {p.payee.upiId}</span></p>
               <a href={p.upiLink} className="rounded-full bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-700 sm:hidden">Pay in a UPI app</a>
-              <p className="text-center text-xs text-muted-foreground">Scanning doesn&apos;t mark it paid. Once the money is sent, tap <strong>{p.isMine ? "I've paid" : "Mark paid"}</strong>.</p>
+              <p className="text-center text-xs text-muted-foreground">
+                Scanning doesn&apos;t mark it paid. {p.canRequest ? <>Once the money is sent, tap <strong>I&apos;ve paid</strong>: {p.payee.name} or an admin approves it.</> : <>Once the money arrives, tap <strong>Mark paid</strong>.</>}
+              </p>
             </div>
           ) : (
             <p className="rounded-lg bg-amber-50 p-2 text-sm text-amber-900">{p.payee.name} has no UPI ID yet, so there&apos;s no QR code. Pay them in cash or ask for it.</p>
@@ -546,18 +565,41 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
           ) : (
             <ul className="space-y-2 text-sm">
               {p.transactions.map((t) => (
-                <li key={t._id} className={cn("rounded-lg border p-2", t.voided && "opacity-60")}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={cn("font-semibold", t.voided && "line-through")}>{formatRupees(t.amount)} · {PAYMENT_METHOD_LABELS[t.method]}</span>
-                    {canManage && !t.voided && <Button size="xs" variant="ghost" className="text-destructive" onClick={() => setVoiding({ id: t._id, reason: "" })}><Ban /> Void</Button>}
+                <li key={t._id} className={cn("rounded-lg border p-2", APPROVAL_STYLE[t.approval], t.voided && "opacity-60")}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className={cn("font-semibold", (t.voided || t.approval === "rejected") && "line-through")}>
+                      {formatRupees(t.amount)} · {t.adjustment ? "Status change" : PAYMENT_METHOD_LABELS[t.method]}
+                      {t.approval === "pending" && <span className="ml-2 rounded-full bg-amber-200 px-2 py-0.5 text-xs font-medium text-amber-900 no-underline">Awaiting approval</span>}
+                      {t.approval === "rejected" && <span className="ml-2 rounded-full bg-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700">Rejected</span>}
+                    </span>
+                    <span className="flex gap-1">
+                      {t.approval === "pending" && p.canConfirm && (
+                        <>
+                          <Button size="xs" className="bg-emerald-600 text-white hover:bg-emerald-700" disabled={busy} onClick={() => void run(txUrl(t._id, "review"), { decision: "approve" }, "Approved ✅ It now counts as paid.")}><Check /> Approve</Button>
+                          <Button size="xs" variant="ghost" className="text-destructive" onClick={() => setRejecting({ id: t._id, note: "" })}><X /> Reject</Button>
+                        </>
+                      )}
+                      {t.approval === "pending" && p.isMine && !p.canConfirm && (
+                        <Button size="xs" variant="ghost" disabled={busy} onClick={() => void run(txUrl(t._id, "review"), { decision: "withdraw" }, "Request withdrawn")}>Withdraw</Button>
+                      )}
+                      {t.approval === "confirmed" && p.canConfirm && !t.voided && <Button size="xs" variant="ghost" className="text-destructive" onClick={() => setVoiding({ id: t._id, reason: "" })}><Ban /> Void</Button>}
+                    </span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Paid {formatDate(t.paidAt)}{t.reference && <> · ref <span className="font-mono">{t.reference}</span></>} · marked by {t.recordedByName || t.recordedByEmail}{t.selfReported && " (self-reported)"} on {formatDate(t.createdAt)}
+                    {t.adjustment ? "Set" : "Paid"} {formatDate(t.paidAt)}{t.reference && <> · ref <span className="font-mono">{t.reference}</span></>} · {t.selfReported ? "reported" : "marked"} by {t.recordedByName || t.recordedByEmail} on {formatDate(t.createdAt)}
                   </p>
                   {t.note && <p className="text-xs">{t.note}</p>}
+                  {t.approval === "confirmed" && t.selfReported && t.reviewedByName && <p className="text-xs text-emerald-700">Approved by {t.reviewedByName} on {formatDate(t.reviewedAt)}</p>}
+                  {t.approval === "rejected" && <p className="text-xs text-red-700">{t.reviewNote.startsWith("Withdrawn") ? t.reviewNote : <>Rejected by {t.reviewedByName} on {formatDate(t.reviewedAt)}{t.reviewNote && <>: {t.reviewNote}</>}</>}</p>}
                   {t.voided && <p className="text-xs text-red-700">Voided by {t.voidedByEmail} on {formatDate(t.voidedAt)}: {t.voidReason}</p>}
+                  {rejecting?.id === t._id && (
+                    <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); void run(txUrl(t._id, "review"), { decision: "reject", note: rejecting.note }, "Rejected"); }}>
+                      <Input autoFocus required maxLength={300} placeholder="Why? e.g. nothing arrived" value={rejecting.note} onChange={(e) => setRejecting({ ...rejecting, note: e.target.value })} />
+                      <Button type="submit" size="sm" variant="destructive" disabled={busy}>{busy && <Loader2 className="animate-spin" />} Reject</Button>
+                    </form>
+                  )}
                   {voiding?.id === t._id && (
-                    <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); void voidTx(); }}>
+                    <form className="mt-2 flex gap-2" onSubmit={(e) => { e.preventDefault(); void run(txUrl(t._id, "void"), { reason: voiding.reason }, "Payment voided"); }}>
                       <Input autoFocus required maxLength={300} placeholder="Why? e.g. recorded twice" value={voiding.reason} onChange={(e) => setVoiding({ ...voiding, reason: e.target.value })} />
                       <Button type="submit" size="sm" variant="destructive" disabled={busy}>{busy && <Loader2 className="animate-spin" />} Void</Button>
                     </form>
@@ -570,44 +612,35 @@ function ViewDialog({ p, canManage, onClose, onPay }: { p: PaymentView; canManag
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Close</Button>
-          {p.canRecord && p.due > 0 && <Button onClick={onPay}><CheckCircle2 /> {p.isMine && !canManage ? "I've paid" : "Mark paid"}</Button>}
+          {p.canConfirm && p.due > 0 && <Button onClick={onPay}><CheckCircle2 /> Mark paid</Button>}
+          {p.canRequest && p.requestable > 0 && <Button onClick={onPay}><Send /> I&apos;ve paid</Button>}
         </DialogFooter>
+        {statusOpen && <ChangeStatusDialog p={p} onClose={() => setStatusOpen(false)} />}
       </DialogContent>
     </Dialog>
   );
 }
 
-/* ------------------------------ mark as paid ------------------------------ */
+/* ------------------------------ change status ------------------------------ */
 
-/** "I've paid": the payer records their own payment (e.g. from the contri card). */
-export function SelfPayButton({ p }: { p: PaymentView }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button size="sm" onClick={() => setOpen(true)}><CheckCircle2 /> I&apos;ve paid</Button>
-      {open && <MarkPaidDialog p={p} self onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
-function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: boolean; onClose: () => void }) {
+function ChangeStatusDialog({ p, onClose }: { p: PaymentView; onClose: () => void }) {
   const router = useRouter();
-  const [f, setF] = useState({ amount: String(p.due), method: "upi" as PaymentMethod, reference: "", paidOn: toDateInput(new Date()), note: "" });
-  // One key per dialog: a double click or retry of the same submit is recorded once.
-  const [key] = useState(newKey);
+  const current = p.status === "overdue" ? (p.paid > 0 ? "partially_paid" : "pending") : p.status;
+  const [f, setF] = useState({ status: current as PaymentStatus, paidAmount: p.paid > 0 && p.paid < p.total ? String(p.paid) : "", reason: "" });
   const [busy, setBusy] = useState(false);
-  const amount = num(f.amount) ?? 0;
-  const after = Math.max(0, Math.round((p.due - amount) * 100) / 100);
-  const tooMuch = amount > p.due;
+  const amount = num(f.paidAmount);
+  const effect =
+    f.status === "paid"
+      ? `Records the remaining ${formatRupees(p.due)} as paid.`
+      : f.status === "pending"
+        ? p.paid > 0 ? `Voids the ${formatRupees(p.paid)} already recorded, so ${formatRupees(p.total)} is due again.` : "Nothing has been paid."
+        : amount && amount > 0 && amount < p.total ? `Paid becomes ${formatRupees(amount)}; ${formatRupees(Math.round((p.total - amount) * 100) / 100)} stays due.` : `Enter an amount between ₹0 and ${formatRupees(p.total)}.`;
 
   async function save() {
     setBusy(true);
     try {
-      const res = await api<{ duplicate: boolean }>(`/api/events/${p.eventId}/payments/${p._id}/transactions`, {
-        method: "POST",
-        json: { amount, method: f.method, reference: f.reference, paidOn: f.paidOn, note: f.note, idempotencyKey: key },
-      });
-      toast.success(res.duplicate ? "Already recorded" : after === 0 ? (self ? "Marked as paid ✅ Thanks!" : `${p.payerName} is fully paid ✅`) : `${formatRupees(amount)} recorded. ${formatRupees(after)} still due.`);
+      await api(`/api/events/${p.eventId}/payments/${p._id}/status`, { method: "POST", json: { status: f.status, reason: f.reason, ...(f.status === "partially_paid" ? { paidAmount: amount } : {}) } });
+      toast.success(`Status changed to ${PAYMENT_STATUS_LABELS[f.status].toLowerCase()}`);
       onClose();
       router.refresh();
     } catch (err) {
@@ -621,22 +654,108 @@ function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: b
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{self ? `I've paid ${p.payee.name}` : `Mark as paid: ${p.payerName}`}</DialogTitle>
+          <DialogTitle>Change status: {p.payerName}</DialogTitle>
+          <DialogDescription>The change, and who made it, is kept in the payment history. Requests still waiting for approval are closed.</DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          <div className="space-y-1">
+            <Label htmlFor="st-status">New status</Label>
+            <NativeSelect id="st-status" value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as PaymentStatus })}>
+              {PAYMENT_STATUSES.map((s) => <option key={s} value={s}>{PAYMENT_STATUS_LABELS[s]}</option>)}
+            </NativeSelect>
+          </div>
+          {f.status === "partially_paid" && (
+            <div className="space-y-1">
+              <Label htmlFor="st-amount">Total paid so far (₹) *</Label>
+              <Input id="st-amount" type="number" required min={0.01} max={Math.max(0.01, p.total - 0.01)} step="0.01" inputMode="decimal" value={f.paidAmount} onChange={(e) => setF({ ...f, paidAmount: e.target.value })} />
+            </div>
+          )}
+          <p className="rounded-lg bg-muted/50 p-2 text-xs">{effect}</p>
+          <div className="space-y-1">
+            <Label htmlFor="st-reason">Reason *</Label>
+            <Input id="st-reason" required maxLength={300} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} placeholder="e.g. paid in cash at the party" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy || !f.reason.trim() || (f.status === "partially_paid" && !(amount && amount > 0 && amount < p.total))}>{busy && <Loader2 className="animate-spin" />} Change status</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------ mark as paid ------------------------------ */
+
+/** "I've paid": the payer asks whoever received the money (or an admin) to approve it. */
+export function SelfPayButton({ p }: { p: PaymentView }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button size="sm" onClick={() => setOpen(true)}><Send /> I&apos;ve paid</Button>
+      {open && <MarkPaidDialog p={p} self onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+/**
+ * `self`: the payer reports a payment, which waits for approval by the receiver or an admin.
+ * Otherwise the receiver (or an admin) records money that arrived, and it counts right away.
+ */
+function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: boolean; onClose: () => void }) {
+  const router = useRouter();
+  const max = self ? p.requestable : p.due;
+  const [f, setF] = useState({ amount: String(max), method: "upi" as PaymentMethod, reference: "", paidOn: toDateInput(new Date()), note: "" });
+  // One key per dialog: a double click or retry of the same submit is recorded once.
+  const [key] = useState(newKey);
+  const [busy, setBusy] = useState(false);
+  const amount = num(f.amount) ?? 0;
+  const after = Math.max(0, Math.round((p.due - amount) * 100) / 100);
+  const tooMuch = amount > max;
+
+  async function save() {
+    setBusy(true);
+    try {
+      const res = await api<{ duplicate: boolean; awaitingApproval?: boolean }>(`/api/events/${p.eventId}/payments/${p._id}/transactions`, {
+        method: "POST",
+        json: { amount, method: f.method, reference: f.reference, paidOn: f.paidOn, note: f.note, idempotencyKey: key },
+      });
+      toast.success(
+        res.duplicate ? "Already recorded" : res.awaitingApproval ? `Sent to ${p.payee.name} for approval ⏳` : after === 0 ? `${p.payerName} is fully paid ✅` : `${formatRupees(amount)} recorded. ${formatRupees(after)} still due.`
+      );
+      onClose();
+      router.refresh();
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{self ? `I've paid ${p.payee.name}: ask for approval` : `Mark as paid: ${p.payerName}`}</DialogTitle>
           <DialogDescription>
-            {self
-              ? <>Only after the money has actually left your account. {formatRupees(p.due)} is due. {p.payee.name} and the organizer see that you marked it yourself.</>
-              : <>Record money that actually reached {p.payee.name}. {formatRupees(p.due)} is due.</>}
+            {self ? (
+              <>Only after the money has left your account. <strong>{p.payee.name}</strong> or an admin gets a request to approve it, and it counts as paid once they do.</>
+            ) : (
+              <>Record money that actually reached {p.payee.name}. {formatRupees(p.due)} is due.</>
+            )}
           </DialogDescription>
         </DialogHeader>
         <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void save(); }}>
           <div className="space-y-1 sm:col-span-2">
             <Label htmlFor="pay-amount">{self ? "Amount you paid (₹) *" : "Amount received (₹) *"}</Label>
             <div className="flex gap-2">
-              <Input id="pay-amount" type="number" required min={0.01} max={p.due} step="0.01" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
-              <Button type="button" variant="outline" onClick={() => setF({ ...f, amount: String(p.due) })}>Full</Button>
+              <Input id="pay-amount" type="number" required min={0.01} max={max} step="0.01" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} />
+              <Button type="button" variant="outline" onClick={() => setF({ ...f, amount: String(max) })}>Full</Button>
             </div>
             <p className={cn("text-xs", tooMuch ? "text-red-700" : "text-muted-foreground")}>
-              {tooMuch ? `Only ${formatRupees(p.due)} is due.` : after === 0 ? "This settles it in full." : `Partial payment: ${formatRupees(after)} will still be due.`}
+              {tooMuch
+                ? self && p.awaitingApproval > 0 ? `Only ${formatRupees(max)}: ${formatRupees(p.awaitingApproval)} is already waiting for approval.` : `Only ${formatRupees(max)} is due.`
+                : after === 0 ? (self ? "Once approved, this settles it in full." : "This settles it in full.") : `Partial payment: ${formatRupees(after)} will still be due${self ? " once approved" : ""}.`}
             </p>
           </div>
           <div className="space-y-1">
@@ -650,7 +769,7 @@ function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: b
             <Input id="pay-date" type="date" required max={toDateInput(new Date())} value={f.paidOn} onChange={(e) => setF({ ...f, paidOn: e.target.value })} />
           </div>
           <div className="space-y-1 sm:col-span-2">
-            <Label htmlFor="pay-ref">Transaction reference (UPI / bank)</Label>
+            <Label htmlFor="pay-ref">Transaction reference (UPI / bank){self && " — helps them find it"}</Label>
             <Input id="pay-ref" maxLength={100} autoComplete="off" value={f.reference} onChange={(e) => setF({ ...f, reference: e.target.value })} placeholder="e.g. 4321 0987 6543" />
           </div>
           <div className="space-y-1 sm:col-span-2">
@@ -659,7 +778,7 @@ function MarkPaidDialog({ p, self = false, onClose }: { p: PaymentView; self?: b
           </div>
           <DialogFooter className="sm:col-span-2">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={busy || tooMuch || amount <= 0}>{busy && <Loader2 className="animate-spin" />} Record payment</Button>
+            <Button type="submit" disabled={busy || tooMuch || amount <= 0}>{busy && <Loader2 className="animate-spin" />} {self ? "Send for approval" : "Record payment"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

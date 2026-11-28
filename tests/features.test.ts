@@ -66,10 +66,10 @@ describe("sign-in for every user + login details email", () => {
     await expect(login({ email: "neha@team.test", password, ip: "4.4.4.2" })).rejects.toMatchObject({ status: 401, code: "TEMP_PASSWORD_USED" });
 
     const session = (await validateSessionToken(token))!;
-    await changeOwnPassword(session, ChangePasswordSchema.parse({ currentPassword: password, newPassword: "my-own-password-1" }));
+    await changeOwnPassword(session, ChangePasswordSchema.parse({ newPassword: "My-own-password-1" }));
     expect((await validateSessionToken(token))?.mustChangePassword).toBe(false);
-    await expect(login({ email: "neha@team.test", password: "my-own-password-1", ip: "4.4.4.3" })).resolves.toBeTruthy();
-    await expect(login({ email: "neha@team.test", password: "my-own-password-1", ip: "4.4.4.4" })).resolves.toBeTruthy();
+    await expect(login({ email: "neha@team.test", password: "My-own-password-1", ip: "4.4.4.3" })).resolves.toBeTruthy();
+    await expect(login({ email: "neha@team.test", password: "My-own-password-1", ip: "4.4.4.4" })).resolves.toBeTruthy();
   });
 
   it("existing users without a password get login details in bulk; users who sign in are left alone", async () => {
@@ -88,23 +88,23 @@ describe("sign-in for every user + login details email", () => {
 
   it("only the Super Admin sends login details or sets passwords", async () => {
     const sup = await superAdmin();
-    const admin = await createUser(create({ email: "a@team.test", name: "A", role: "admin", password: "admin-pass-123" }), sup);
+    const admin = await createUser(create({ email: "a@team.test", name: "A", role: "admin", password: "Admin-pass-123" }), sup);
     const actor = { id: String(admin._id), role: "admin" as const };
     const m = await createUser(create({ email: "m@team.test", name: "M" }), sup);
     await expect(sendCredentials({ userId: String(m._id) }, actor)).rejects.toMatchObject({ status: 403 });
-    await expect(updateUser(String(m._id), upd({ password: "another-pass-1" }), actor)).rejects.toMatchObject({ status: 403 });
-    await expect(createUser(create({ email: "x@team.test", name: "X", password: "another-pass-1" }), actor)).rejects.toMatchObject({ status: 403 });
+    await expect(updateUser(String(m._id), upd({ password: "Another-pass-1" }), actor)).rejects.toMatchObject({ status: 403 });
+    await expect(createUser(create({ email: "x@team.test", name: "X", password: "Another-pass-1" }), actor)).rejects.toMatchObject({ status: 403 });
   });
 
   it("a password set by the Super Admin is one-time and signs the user out", async () => {
     const sup = await superAdmin();
     const m = await createUser(create({ email: "m@team.test", name: "M" }), sup);
-    await updateUser(String(m._id), upd({ password: "temp-pass-12345" }), sup);
-    const { token } = await login({ email: "m@team.test", password: "temp-pass-12345", ip: "4.4.5.1" });
-    await updateUser(String(m._id), upd({ password: "temp-pass-67890" }), sup);
+    await updateUser(String(m._id), upd({ password: "Temp-pass-12345" }), sup);
+    const { token } = await login({ email: "m@team.test", password: "Temp-pass-12345", ip: "4.4.5.1" });
+    await updateUser(String(m._id), upd({ password: "Temp-pass-67890" }), sup);
     expect(await validateSessionToken(token)).toBeNull();
-    await login({ email: "m@team.test", password: "temp-pass-67890", ip: "4.4.5.2" });
-    await expect(login({ email: "m@team.test", password: "temp-pass-67890", ip: "4.4.5.3" })).rejects.toMatchObject({ code: "TEMP_PASSWORD_USED" });
+    await login({ email: "m@team.test", password: "Temp-pass-67890", ip: "4.4.5.2" });
+    await expect(login({ email: "m@team.test", password: "Temp-pass-67890", ip: "4.4.5.3" })).rejects.toMatchObject({ code: "TEMP_PASSWORD_USED" });
   });
 });
 

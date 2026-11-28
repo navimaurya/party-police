@@ -13,9 +13,11 @@ import {
   RELATIONS,
   MONEY_ROLES,
   PAYMENT_METHODS,
+  PAYMENT_STATUSES,
   PAYMENT_MODELS,
 } from "@/types";
 import { isWholePaise } from "@/lib/payments";
+import { PASSWORD_MAX_LENGTH, passwordProblems } from "@/lib/password-policy";
 
 const trimmed = (max: number) => z.string().trim().max(max);
 /** "" or null clears the value; omitted leaves it unchanged. */
@@ -322,7 +324,14 @@ export const TestEmailSchema = z.object({ to: z.email() });
 
 /* --------------------------------- users --------------------------------- */
 
-const password = z.string().min(10, "Password must be at least 10 characters").max(200);
+/** The password policy (lib/password-policy.ts): 6+ characters with a capital, a small letter, a number and a special character. */
+const password = z
+  .string()
+  .max(PASSWORD_MAX_LENGTH)
+  .superRefine((pw, ctx) => {
+    const broken = passwordProblems(pw);
+    if (broken.length) ctx.addIssue({ code: "custom", message: `Password needs: ${broken.map((r) => r.label.charAt(0).toLowerCase() + r.label.slice(1)).join(", ")}` });
+  });
 
 export const OccasionSchema = z
   .object({
@@ -393,10 +402,20 @@ export const CredentialsSendSchema = z
   .strict()
   .refine((v) => !!v.userId !== !!v.allWithoutPassword, { message: "Pass either userId or allWithoutPassword" });
 
+/**
+ * `currentPassword` is required, except right after signing in with a one-time password:
+ * that sign-in already proved it, so the user only chooses a new one (checked in the service).
+ */
 export const ChangePasswordSchema = z
-  .object({ currentPassword: z.string().min(1).max(200), newPassword: password })
+  .object({ currentPassword: z.string().max(200).optional(), newPassword: password })
   .strict()
   .refine((v) => v.currentPassword !== v.newPassword, { path: ["newPassword"], message: "Choose a different password" });
+
+export const ForgotPasswordSchema = z.object({ email: z.email().max(200).transform((v) => v.toLowerCase().trim()) }).strict();
+
+export const ResetPasswordSchema = z
+  .object({ token: z.string().trim().min(20).max(200).regex(/^[\w-]+$/, "Invalid link"), newPassword: password })
+  .strict();
 
 /* ----------------------------- party payments ----------------------------- */
 
@@ -462,5 +481,17 @@ export const PaymentRecordSchema = z
     idempotencyKey: z.string().trim().min(8).max(100).regex(/^[\w-]+$/, "Invalid key"),
   })
   .strict();
+
+/** Approve or reject a payment the payer reported ("withdraw": the payer takes their own request back). */
+export const PaymentReviewSchema = z
+  .object({ decision: z.enum(["approve", "reject", "withdraw"]), note: trimmed(300).default("") })
+  .strict()
+  .refine((v) => v.decision !== "reject" || v.note.length > 0, { path: ["note"], message: "Say why it's rejected" });
+
+/** "Change status": sets a payment to pending / partially paid / paid, recorded in its history. */
+export const PaymentStatusSchema = z
+  .object({ status: z.enum(PAYMENT_STATUSES), paidAmount: rupees.optional(), reason: trimmed(300).min(1, "Say why the status is changing") })
+  .strict()
+  .refine((v) => v.status !== "partially_paid" || v.paidAmount !== undefined, { path: ["paidAmount"], message: "How much has been paid?" });
 
 export const VoidTransactionSchema = z.object({ reason: trimmed(300).min(1, "Say why this payment is being voided") }).strict();

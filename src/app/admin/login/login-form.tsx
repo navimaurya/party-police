@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ export function LoginForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const reset = useSearchParams().get("reset") === "1";
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -39,9 +41,13 @@ export function LoginForm() {
         <Input id="email" name="email" type="email" autoComplete="username" required />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="password">Password</Label>
+        <div className="flex items-baseline justify-between">
+          <Label htmlFor="password">Password</Label>
+          <Link href="/admin/forgot-password" className="text-xs text-primary hover:underline">Forgot password?</Link>
+        </div>
         <Input id="password" name="password" type="password" autoComplete="current-password" required />
       </div>
+      {reset && !error && <p role="status" className="rounded-lg bg-emerald-50 p-2 text-sm text-emerald-800">✅ Password updated. Sign in with your new password.</p>}
       {error && <p role="alert" className="rounded-lg bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       <Button type="submit" className="w-full" size="lg" disabled={pending}>
         {pending && <Loader2 className="animate-spin" />} Enter HQ

@@ -19,7 +19,8 @@ export default async function MyPaymentsPage() {
   const user = await requireUserPage();
   const groups = await listMyPayments(user);
   const owed = groups.flatMap((g) => g.payments).filter((p) => p.isMine).reduce((s, p) => s + Math.round(p.due * 100), 0) / 100;
-  const toCollect = groups.flatMap((g) => g.payments).filter((p) => !p.isMine && p.canRecord).reduce((s, p) => s + Math.round(p.due * 100), 0) / 100;
+  const toCollect = groups.flatMap((g) => g.payments).filter((p) => !p.isMine && p.canConfirm).reduce((s, p) => s + Math.round(p.due * 100), 0) / 100;
+  const toApprove = groups.flatMap((g) => g.payments).filter((p) => p.canConfirm && p.awaitingApproval > 0).length;
 
   return (
     <div className="space-y-6">
@@ -27,7 +28,7 @@ export default async function MyPaymentsPage() {
         title="💰 My payments"
         subtitle={
           groups.length
-            ? <>You owe <strong>{formatRupees(owed)}</strong>{toCollect > 0 && <> · you collect <strong>{formatRupees(toCollect)}</strong></>}</>
+            ? <>You owe <strong>{formatRupees(owed)}</strong>{toCollect > 0 && <> · you collect <strong>{formatRupees(toCollect)}</strong></>}{toApprove > 0 && <> · <strong className="text-amber-700">⏳ {toApprove} payment{toApprove === 1 ? "" : "s"} to approve</strong></>}</>
             : "Your party shares and the payments you collect."
         }
       />

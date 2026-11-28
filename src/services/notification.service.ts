@@ -1,5 +1,6 @@
 import os from "node:os";
 import { Types } from "mongoose";
+import { env } from "@/config/env";
 import { connectDB } from "@/lib/mongodb";
 import { NotificationLog, PartyBill, PartyCommitment, PartyEvent, ScheduledJob, User, type ScheduledJobDoc } from "@/models";
 import {
@@ -24,8 +25,10 @@ import { hashPassword, revokeSessions, superAdminEmails } from "./auth.service";
 import { randomToken } from "@/lib/crypto";
 import { computeContriSplit, type ContriInput } from "@/lib/contri";
 import { upiQrPng } from "@/lib/upi-qr";
-import { getContriPaymentState } from "./payment.service";
-import type { NotificationType, UserRole } from "@/types";
+import { getApprovalRequest, getContriPaymentState } from "./payment.service";
+import { issuePasswordResetToken, PASSWORD_RESET_TTL_MS, resetPasswordUrl } from "./password.service";
+import { listUpcomingOccasions } from "./occasion.service";
+import { ALWAYS_SENT_NOTIFICATIONS, type NotificationType, type UserRole } from "@/types";
 
 export const WORKER_ID = `${os.hostname()}:${process.pid}:${Math.random().toString(36).slice(2, 8)}`;
 
@@ -218,6 +221,12 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
               : T.giverThanksEmail(event, subject, event.approvedAt ?? event.completedAt ?? new Date()),
         };
       }
+      case "payment_approval_request": {
+        // Re-read: an already approved/rejected/withdrawn request isn't emailed.
+        const req = await getApprovalRequest(String(job.payload?.paymentId ?? ""), String(job.payload?.txId ?? ""));
+        if (!req) return { skip: "The request was already handled" };
+        return { to: req.to, rendered: T.paymentApprovalRequestEmail(req) };
+      }
       default:
         return { skip: `Job type ${job.jobType} does not apply to events` };
     }
@@ -267,6 +276,29 @@ async function buildMessage(job: Job, settings: Settings): Promise<Built> {
         return T.credentialsEmail(target, password);
       },
     };
+  }
+  if (job.jobType === "password_reset" && job.userId) {
+    const user = await User.findById(job.userId).lean();
+    if (!user) return { skip: "User no longer exists" };
+    if (!user.isActive) return { skip: "User is inactive" };
+    const minutes = Math.round(PASSWORD_RESET_TTL_MS / 60_000);
+    return {
+      to: [user.email],
+      rendered: T.passwordResetEmail(user, `${env().APP_URL}/admin/reset-password?token=…`, minutes),
+      // Issued at send time and stored only as a hash; a retry issues a fresh link.
+      finalize: async () => T.passwordResetEmail(user, resetPasswordUrl(await issuePasswordResetToken(user._id)), minutes),
+    };
+  }
+  if ((job.jobType === "occasion_wish" || job.jobType === "occasion_reminder") && job.userId) {
+    const key = String(job.payload?.occasionKey ?? "");
+    const day = String(job.payload?.dayKey ?? "");
+    if (dayKey(new Date()) !== day) return { skip: "The day has passed" };
+    // Re-read from the profile: a deleted or moved date isn't wished.
+    const occ = (await listUpcomingOccasions({ userId: String(job.userId), days: 1 })).find((o) => o.key === key && o.nextDay === day);
+    if (!occ) return { skip: "The occasion was changed or removed" };
+    if (job.jobType === "occasion_wish") return { to: [occ.userEmail], rendered: T.occasionWishEmail({ name: occ.userName }, occ) };
+    const others = uniqueEmails(await activeUserEmails()).filter((e) => e !== occ.userEmail.toLowerCase());
+    return { to: others, rendered: T.occasionReminderEmail(occ) };
   }
   if (job.jobType === "user_role_upgrade" && job.userId) {
     const user = await User.findById(job.userId).lean();
@@ -359,7 +391,7 @@ async function logSkip(job: Job, reason: string) {
 
 export async function processJob(job: Job, workerId = WORKER_ID) {
   const settings = await getSettings();
-  if (!isNotificationTypeEnabled(settings, job.jobType as NotificationType)) {
+  if (!ALWAYS_SENT_NOTIFICATIONS.includes(job.jobType as NotificationType) && !isNotificationTypeEnabled(settings, job.jobType as NotificationType)) {
     await skipJob(job._id, workerId, "Notifications disabled");
     await logSkip(job, "Notifications disabled");
     return { outcome: "skipped" as const, reason: "Notifications disabled" };
@@ -430,7 +462,7 @@ export async function processJob(job: Job, workerId = WORKER_ID) {
 /** Scans upcoming events and pending commitments and enqueues due reminders (idempotent). */
 export async function enqueueRecurringNotifications(now = new Date()) {
   const settings = await getSettings();
-  if (!settings.notificationEnabled) return { reminders: 0, defaulters: 0, overdue: 0, partyDay: 0 };
+  if (!settings.notificationEnabled) return { reminders: 0, defaulters: 0, overdue: 0, partyDay: 0, occasions: 0 };
   let reminders = 0;
   let defaulters = 0;
   let overdue = 0;
@@ -492,7 +524,8 @@ export async function enqueueRecurringNotifications(now = new Date()) {
     }
   }
   const partyDay = await enqueuePartyDayNotifications(settings, now);
-  return { reminders, defaulters, overdue, partyDay };
+  const occasions = await enqueueOccasionNotifications(settings, now);
+  return { reminders, defaulters, overdue, partyDay, occasions };
 }
 
 /**
@@ -528,6 +561,32 @@ export async function enqueuePartyDayNotifications(settings: Settings, now = new
       // The approval request goes right after the giver's notice, so the thread reads in order.
       const at = j.type === "party_approval_request" ? new Date(sendAt.getTime() + 1000) : sendAt;
       const res = await enqueueJob({ jobType: j.type, idempotencyKey: j.key, scheduledAt: at, eventId: e._id, payload: { dayKey: day } });
+      if (res.created) queued++;
+    }
+  }
+  return queued;
+}
+
+/**
+ * Today's occasions (birthdays, work anniversaries, family events from profiles): a wish to the
+ * user, and a reminder to everyone else to wish them. Sent at the party-day hour (default 9 AM);
+ * one email of each kind per occasion per day (idempotency keys).
+ */
+export async function enqueueOccasionNotifications(settings: Settings, now = new Date()) {
+  const day = dayKey(now);
+  const sendAt = atLocalHour(day, settings.partyDay?.sendAtHour ?? 9);
+  const today = (await listUpcomingOccasions({ days: 1, now })).filter((o) => o.daysAway === 0);
+  let queued = 0;
+  for (const o of today) {
+    for (const type of ["occasion_wish", "occasion_reminder"] as const) {
+      if (!isNotificationTypeEnabled(settings, type)) continue;
+      const res = await enqueueJob({
+        jobType: type,
+        idempotencyKey: `${type}:${o.key}:${day}`,
+        scheduledAt: sendAt,
+        userId: new Types.ObjectId(o.userId),
+        payload: { occasionKey: o.key, dayKey: day },
+      });
       if (res.created) queued++;
     }
   }

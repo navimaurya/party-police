@@ -4,7 +4,6 @@ import { User } from "@/models";
 import { badRequest, conflict, forbidden, notFound } from "@/lib/errors";
 import { assertObjectId, escapeRegex } from "@/lib/utils-server";
 import type {
-  ChangePasswordSchema,
   ProfileUpdateSchema,
   UserCreateSchema,
   UserListQuerySchema,
@@ -15,7 +14,7 @@ import { audit } from "./audit.service";
 import { enqueueJob } from "@/lib/scheduler";
 import { mongoSort, parseSort, TEXT_COLLATION } from "@/lib/sort";
 import { USER_DEFAULT_SORT, USER_SORT_FIELDS } from "@/lib/sort-fields";
-import { hashPassword, revokeSessions, verifyPassword } from "./auth.service";
+import { hashPassword, revokeSessions } from "./auth.service";
 
 type CreateInput = z.infer<typeof UserCreateSchema>;
 type UpdateInput = z.infer<typeof UserUpdateSchema>;
@@ -266,18 +265,5 @@ export async function updateOwnProfile(actor: Actor, input: z.infer<typeof Profi
   return after;
 }
 
-/** Changes the signed-in user's password and signs out their other sessions. */
-export async function changeOwnPassword(actor: Actor, input: z.infer<typeof ChangePasswordSchema>) {
-  await connectDB();
-  const user = await User.findById(actor.id).select("+passwordHash").lean();
-  if (!user) throw notFound("User not found");
-  if (!(await verifyPassword(input.currentPassword, user.passwordHash)) || !user.passwordHash) {
-    throw badRequest("Your current password is incorrect", { fieldErrors: { currentPassword: ["Incorrect password"] } });
-  }
-  await User.updateOne(
-    { _id: user._id },
-    { $set: { passwordHash: await hashPassword(input.newPassword), mustChangePassword: false, tempPasswordUsedAt: null, passwordChangedAt: new Date() } }
-  );
-  await revokeSessions(user._id, actor.sessionId);
-  await audit({ action: "user.password_change", entityType: "User", entityId: actor.id, actorId: actor.id });
-}
+/** Moved to password.service (also used by the forgot-password flow); re-exported for existing callers. */
+export { changeOwnPassword } from "./password.service";

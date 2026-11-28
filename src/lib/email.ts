@@ -16,7 +16,8 @@ export function smtpSecure() {
 export function getTransport(): Transporter {
   if (transporter) return transporter;
   const e = env();
-  if (!e.SMTP_HOST) throw new Error("SMTP is not configured (SMTP_HOST is empty)");
+  if (!e.SMTP_HOST)
+    throw new Error("SMTP is not configured (SMTP_HOST is empty)");
   if (e.SMTP_HOST === "console") {
     transporter = nodemailer.createTransport({ jsonTransport: true });
   } else {
@@ -25,7 +26,9 @@ export function getTransport(): Transporter {
       port: e.SMTP_PORT,
       // 465 = TLS from the start; 587/25 = STARTTLS upgrade.
       secure: smtpSecure(),
-      auth: e.SMTP_USER ? { user: e.SMTP_USER, pass: e.SMTP_PASSWORD } : undefined,
+      auth: e.SMTP_USER
+        ? { user: e.SMTP_USER, pass: e.SMTP_PASSWORD }
+        : undefined,
       // A fresh connection per email. Party email volume is low, and a pooled connection
       // that the server silently dropped would otherwise fail every following send.
       pool: false,
@@ -51,7 +54,12 @@ export type OutgoingEmail = {
   attachments?: EmailAttachment[];
 };
 
-export type EmailAttachment = { filename: string; content: Buffer; contentType: string; cid: string };
+export type EmailAttachment = {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+  cid: string;
+};
 
 /**
  * Domain for Message-IDs: the sender's own domain (from SMTP_FROM). A made-up domain
@@ -60,7 +68,10 @@ export type EmailAttachment = { filename: string; content: Buffer; contentType: 
 function messageIdDomain() {
   const from = env().SMTP_FROM;
   const addr = (/<([^>]+)>/.exec(from)?.[1] ?? from).trim();
-  const domain = addr.split("@")[1]?.toLowerCase().replace(/[^a-z0-9.-]/g, "");
+  const domain = addr
+    .split("@")[1]
+    ?.toLowerCase()
+    .replace(/[^a-z0-9.-]/g, "");
   if (domain && domain.includes(".")) return domain;
   try {
     return new URL(env().APP_URL).hostname || "party-police.invalid";
@@ -74,13 +85,27 @@ export function messageIdFor(key: string) {
   return `<${key.replace(/[^a-zA-Z0-9.-]/g, ".")}@${messageIdDomain()}>`;
 }
 
-export type SendResult = { messageId: string; accepted: string[]; rejected: string[]; response: string };
+export type SendResult = {
+  messageId: string;
+  accepted: string[];
+  rejected: string[];
+  response: string;
+};
 
 /** Network-level failures (timeouts, no greeting, dropped socket): retry with a fresh transport. */
 export function isConnectionError(err: unknown) {
   const code = String((err as { code?: string }).code ?? "");
   const msg = String((err as Error)?.message ?? "");
-  return ["ETIMEDOUT", "ECONNECTION", "ESOCKET", "ECONNRESET", "ECONNREFUSED", "EDNS"].includes(code) || /greeting never received|timeout|socket/i.test(msg);
+  return (
+    [
+      "ETIMEDOUT",
+      "ECONNECTION",
+      "ESOCKET",
+      "ECONNRESET",
+      "ECONNREFUSED",
+      "EDNS",
+    ].includes(code) || /greeting never received|timeout|socket/i.test(msg)
+  );
 }
 
 /** Drops the cached transport (e.g. after a connection failure) so the next send reconnects. */
@@ -96,7 +121,13 @@ export function resetTransport() {
 /** Errors that will not succeed on retry (bad recipient, auth config). */
 export function isPermanentSmtpError(err: unknown) {
   const code = (err as { responseCode?: number }).responseCode;
-  return typeof code === "number" && code >= 500 && code < 600 && code !== 554 && code !== 552;
+  return (
+    typeof code === "number" &&
+    code >= 500 &&
+    code < 600 &&
+    code !== 554 &&
+    code !== 552
+  );
 }
 
 export async function sendEmail(msg: OutgoingEmail): Promise<SendResult> {
@@ -104,7 +135,12 @@ export async function sendEmail(msg: OutgoingEmail): Promise<SendResult> {
   const t = getTransport();
   // Broadcasts go out as BCC so members don't see each other's addresses.
   const visible = msg.to.length === 1 || (msg.cc?.length ?? 0) > 0;
-  let info: { messageId?: string; accepted?: unknown; rejected?: unknown; response?: string };
+  let info: {
+    messageId?: string;
+    accepted?: unknown;
+    rejected?: unknown;
+    response?: string;
+  };
   try {
     info = await t.sendMail({
       from: e.SMTP_FROM,
@@ -119,7 +155,10 @@ export async function sendEmail(msg: OutgoingEmail): Promise<SendResult> {
       inReplyTo: msg.thread?.inReplyTo,
       references: msg.thread?.references,
       headers: { "X-Party-Police-Key": msg.idempotencyKey },
-      attachments: msg.attachments?.map((a) => ({ ...a, contentDisposition: "inline" as const })),
+      attachments: msg.attachments?.map((a) => ({
+        ...a,
+        contentDisposition: "inline" as const,
+      })),
     });
   } catch (err) {
     if (isConnectionError(err)) {
@@ -132,17 +171,42 @@ export async function sendEmail(msg: OutgoingEmail): Promise<SendResult> {
   }
   if (e.SMTP_HOST === "console") {
     const cc = msg.cc?.length ? ` cc=${msg.cc.join(",")}` : "";
-    const reply = msg.thread?.inReplyTo ? ` in-reply-to=${msg.thread.inReplyTo}` : "";
-    console.info(`[email:console] to=${msg.to.join(",")}${cc}${reply} subject="${msg.subject}"\n${msg.text}`);
+    const reply = msg.thread?.inReplyTo
+      ? ` in-reply-to=${msg.thread.inReplyTo}`
+      : "";
+    console.info(
+      `[email:console] to=${msg.to.join(",")}${cc}${reply} subject="${msg.subject}"\n${msg.text}`,
+    );
   }
-  const list = (v: unknown) => (Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : String((x as { address?: string }).address ?? x))) : []);
+  const list = (v: unknown) =>
+    Array.isArray(v)
+      ? v.map((x) =>
+          typeof x === "string"
+            ? x
+            : String((x as { address?: string }).address ?? x),
+        )
+      : [];
   const accepted = list(info.accepted);
   const rejected = list(info.rejected);
   // The SMTP server refused every recipient: that's a failure, not a send.
-  if (e.SMTP_HOST !== "console" && accepted.length === 0 && rejected.length > 0) {
-    throw Object.assign(new Error(`SMTP server rejected all recipients: ${rejected.join(", ")} (${String(info.response ?? "")})`), { responseCode: 550 });
+  if (
+    e.SMTP_HOST !== "console" &&
+    accepted.length === 0 &&
+    rejected.length > 0
+  ) {
+    throw Object.assign(
+      new Error(
+        `SMTP server rejected all recipients: ${rejected.join(", ")} (${String(info.response ?? "")})`,
+      ),
+      { responseCode: 550 },
+    );
   }
-  return { messageId: String(info.messageId ?? ""), accepted, rejected, response: String(info.response ?? "").slice(0, 300) };
+  return {
+    messageId: String(info.messageId ?? ""),
+    accepted,
+    rejected,
+    response: String(info.response ?? "").slice(0, 300),
+  };
 }
 
 /** Test hook. */

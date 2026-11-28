@@ -5,11 +5,12 @@ import { recordPayment } from "@/services/payment.service";
 
 type Ctx = { params: Promise<{ id: string; paymentId: string }> };
 
-/** "Mark as paid": records a full or partial payment. Replays with the same idempotency key are no-ops. */
+/** "Mark paid" (receiver/admin) or "I've paid" (payer: a request for approval). Replays with the same idempotency key are no-ops. */
 export const POST = route<Ctx>(async (req, ctx) => {
   const user = await requireUserApi(req);
   const { id, paymentId } = await ctx.params;
   const input = PaymentRecordSchema.parse(await readJson(req));
-  const { payment, duplicate } = await recordPayment(id, paymentId, input, user);
-  return ok({ payment, duplicate }, { status: duplicate ? 200 : 201 });
+  const { payment, duplicate, awaitingApproval = false } = await recordPayment(id, paymentId, input, user);
+  // awaitingApproval: the payer reported it; it counts once the receiver or an admin approves.
+  return ok({ payment, duplicate, awaitingApproval }, { status: duplicate ? 200 : 201 });
 });

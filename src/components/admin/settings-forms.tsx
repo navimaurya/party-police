@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api, toastError } from "@/lib/api-client";
-import { NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, type NotificationType } from "@/types";
+import { ALWAYS_SENT_NOTIFICATIONS, NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, type NotificationType } from "@/types";
 
 export type SettingsData = {
   notificationEnabled: boolean;
@@ -56,7 +56,7 @@ export function NotificationTypesForm({ settings }: { settings: SettingsData }) 
           <span><span className="font-medium">All notifications</span><span className="block text-xs text-muted-foreground">Master switch. When off, nothing is sent (queued jobs are skipped).</span></span>
           <Switch checked={master} onCheckedChange={setMaster} />
         </label>
-        {NOTIFICATION_TYPES.map((t) => (
+        {NOTIFICATION_TYPES.filter((t) => !ALWAYS_SENT_NOTIFICATIONS.includes(t)).map((t) => (
           <label key={t} className={`flex items-center justify-between gap-3 text-sm ${!master ? "opacity-50" : ""}`}>
             {NOTIFICATION_TYPE_LABELS[t]}
             <Switch checked={types[t]} onCheckedChange={(c) => setTypes({ ...types, [t]: c })} />

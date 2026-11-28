@@ -12,11 +12,14 @@ import type {
   MoneyRoleUpdateSchema,
   PaymentCreateSchema,
   PaymentRecordSchema,
+  PaymentReviewSchema,
+  PaymentStatusSchema,
   PaymentUpdateSchema,
   VoidTransactionSchema,
 } from "@/lib/validation";
-import { isPartyManager, PAYMENT_KIND_LABELS, type MoneyRole, type PaymentKind, type PaymentMethod, type PaymentModel, type PaymentViewStatus, type UserRole } from "@/types";
+import { isAdminRole, isPartyManager, PAYMENT_KIND_LABELS, type MoneyRole, type PaymentKind, type PaymentMethod, type PaymentModel, type PaymentViewStatus, type UserRole } from "@/types";
 import { audit } from "./audit.service";
+import { enqueueJob } from "@/lib/scheduler";
 
 /**
  * Party payments: individual shares, lenders/providers, and the payments recorded against them.
@@ -45,27 +48,39 @@ export function canManagePayments(event: Pick<EventLean, "organizerEmail">, acto
   return isPartyManager(actor.role) || (!!event.organizerEmail && lower(event.organizerEmail) === lower(actor.email));
 }
 
-type Access = { manage: boolean; collectorRoleIds: Set<string>; email: string };
+type Access = { manage: boolean; admin: boolean; isGiver: boolean; collectorRoleIds: Set<string>; email: string };
 
 function accessFor(event: EventLean, roles: RoleLean[], actor: PaymentActor): Access {
   const email = lower(actor.email);
   return {
     manage: canManagePayments(event, actor),
-    // Providers (and lenders being repaid) may record money they received themselves.
+    admin: isAdminRole(actor.role),
+    isGiver: !!event.organizerEmail && lower(event.organizerEmail) === email,
+    // Money givers and providers confirm the money they received themselves.
     collectorRoleIds: new Set(roles.filter((r) => r.email && lower(r.email) === email).map((r) => String(r._id))),
     email,
   };
 }
 
+type Who = Pick<PaymentLean, "payeeRoleId" | "payerEmail">;
 const isPayer = (a: Access, p: Pick<PaymentLean, "payerEmail">) => !!p.payerEmail && lower(p.payerEmail) === a.email;
-const isReceiver = (a: Access, p: Pick<PaymentLean, "payeeRoleId">) => a.manage || (!!p.payeeRoleId && a.collectorRoleIds.has(String(p.payeeRoleId)));
+/** The person the money goes to: the money giver / provider, or the party giver (payee = host). */
+const isReceiverPerson = (a: Access, p: Pick<PaymentLean, "payeeRoleId">) => (p.payeeRoleId ? a.collectorRoleIds.has(String(p.payeeRoleId)) : a.isGiver);
 /**
- * Who may record a payment: the organizers, whoever receives it, and the payer themselves
- * ("I've paid", so the giver doesn't have to mark everyone). Self-marked payments are flagged
- * in the history, and the organizer can void one that never arrived.
+ * Who CONFIRMS money: whoever received it, or an admin. Never the payer: someone who paid
+ * (e.g. the party giver repaying a money giver) can only ask for approval.
+ * Confirming covers "Mark paid", approving requests, voiding and changing the status.
  */
-const canRecord = (a: Access, p: Pick<PaymentLean, "payeeRoleId" | "payerEmail">) => isReceiver(a, p) || isPayer(a, p);
-const canView = canRecord;
+const canConfirm = (a: Access, p: Who) => !isPayer(a, p) && (a.admin || isReceiverPerson(a, p));
+/** The payer reports "I've paid": a request that counts only once it's approved. */
+const canRequest = (a: Access, p: Who) => isPayer(a, p) && !canConfirm(a, p);
+const canRecord = (a: Access, p: Who) => canConfirm(a, p) || canRequest(a, p);
+const canView = (a: Access, p: Who) => a.manage || a.admin || isPayer(a, p) || isReceiverPerson(a, p);
+
+type Tx = NonNullable<PaymentLean["transactions"]>[number] & { _id: Types.ObjectId; approval?: string | null };
+const approvalOf = (t: Tx) => (t.approval ?? "confirmed") as "confirmed" | "pending" | "rejected";
+/** Reported by the payer, not yet approved or rejected. */
+const pendingPaise = (p: PaymentLean) => ((p.transactions ?? []) as Tx[]).filter((t) => approvalOf(t) === "pending").reduce((s, t) => s + t.amountPaise, 0);
 
 async function loadEvent(eventId: string) {
   const _id = assertObjectId(eventId, "party id");
@@ -97,6 +112,11 @@ export type TransactionView = {
   createdAt: string;
   /** Marked by the payer themselves rather than by whoever received it. */
   selfReported: boolean;
+  approval: "confirmed" | "pending" | "rejected";
+  reviewedByName: string;
+  reviewedAt: string | null;
+  reviewNote: string;
+  adjustment: boolean;
   voided: boolean;
   voidedAt: string | null;
   voidedByEmail: string;
@@ -122,7 +142,15 @@ export type PaymentView = {
   upiLink: string | null;
   /** Changes whenever the amounts do (cache-buster for the QR image). */
   revision: number;
+  /** Reported by the payer and waiting for approval (not counted in `paid` yet). */
+  awaitingApproval: number;
+  /** What the payer can still report: due minus what's already waiting for approval. */
+  requestable: number;
   canRecord: boolean;
+  /** Receiver or admin: Mark paid, approve/reject requests, void, change status. */
+  canConfirm: boolean;
+  /** The payer: "I've paid" sends a request for approval. */
+  canRequest: boolean;
   isMine: boolean;
   /** Created from the contri split; follows it until edited by hand. */
   auto: boolean;
@@ -177,6 +205,9 @@ function payeeOf(ctx: Ctx, p: Pick<PaymentLean, "payeeRoleId">): PayeeView {
 
 function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
   const duePaise = remainingPaise(p.amountPaise, p.paidPaise);
+  const waiting = Math.min(duePaise, pendingPaise(p));
+  // The QR is for what's left after the payments already reported, so nobody pays twice.
+  const qrPaise = duePaise - waiting;
   const payee = payeeOf(ctx, p);
   const dueDay = p.dueDate ? dayKey(p.dueDate) : null;
   const ref = String(p._id).slice(-6);
@@ -195,7 +226,7 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
     dueDate: dueDay,
     note: p.note ?? "",
     transactions: (p.transactions ?? []).map((t) => {
-      const tx = t as typeof t & { _id: Types.ObjectId; createdAt?: Date };
+      const tx = t as Tx & { createdAt?: Date; reviewedAt?: Date | null; reviewedByName?: string; reviewNote?: string; adjustment?: boolean };
       return {
         _id: String(tx._id),
         amount: fromPaise(tx.amountPaise),
@@ -207,6 +238,11 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
         recordedByEmail: tx.recordedByEmail ?? "",
         createdAt: new Date(tx.createdAt ?? tx.paidAt).toISOString(),
         selfReported: !!(tx as { selfReported?: boolean }).selfReported,
+        approval: approvalOf(tx),
+        reviewedByName: tx.reviewedByName ?? "",
+        reviewedAt: tx.reviewedAt ? new Date(tx.reviewedAt).toISOString() : null,
+        reviewNote: tx.reviewNote ?? "",
+        adjustment: !!tx.adjustment,
         voided: !!tx.voidedAt,
         voidedAt: tx.voidedAt ? new Date(tx.voidedAt).toISOString() : null,
         voidedByEmail: tx.voidedByEmail ?? "",
@@ -215,11 +251,15 @@ function toView(ctx: Ctx, p: PaymentLean, access: Access): PaymentView {
     }),
     // Never a QR for a zero or fully paid amount.
     upiLink:
-      duePaise > 0 && payee.upiId
-        ? upiPayLink({ upiId: payee.upiId, payeeName: payee.name, amount: fromPaise(duePaise), note: `${PAYMENT_KIND_LABELS[p.kind as PaymentKind]}: ${ctx.event.title} #${ref}` })
+      qrPaise > 0 && payee.upiId
+        ? upiPayLink({ upiId: payee.upiId, payeeName: payee.name, amount: fromPaise(qrPaise), note: `${PAYMENT_KIND_LABELS[p.kind as PaymentKind]}: ${ctx.event.title} #${ref}` })
         : null,
     revision: p.revision ?? 0,
+    awaitingApproval: fromPaise(waiting),
+    requestable: fromPaise(qrPaise),
     canRecord: canRecord(access, p),
+    canConfirm: canConfirm(access, p),
+    canRequest: canRequest(access, p),
     isMine: isPayer(access, p),
     auto: p.source === "contri",
   };
@@ -291,9 +331,18 @@ export async function listMyPayments(actor: PaymentActor) {
   await connectDB();
   const email = lower(actor.email);
   const myRoles = (await PartyMoneyRole.find({ email }).lean()) as RoleLean[];
-  const records = (await PartyPayment.find({
-    $or: [{ payerEmail: email }, ...(myRoles.length ? [{ payeeRoleId: { $in: myRoles.map((r) => r._id) } }] : [])],
-  })
+  // Parties I give: payments to me (payee = host).
+  const giving = await PartyEvent.find({ organizerEmail: email }).select({ _id: 1 }).lean();
+  const filter: Record<string, unknown> = {
+    $or: [
+      { payerEmail: email },
+      ...(myRoles.length ? [{ payeeRoleId: { $in: myRoles.map((r) => r._id) } }] : []),
+      ...(giving.length ? [{ eventId: { $in: giving.map((e) => e._id) }, payeeRoleId: null }] : []),
+      // Admins approve requests on any party.
+      ...(isAdminRole(actor.role) ? [{ "transactions.approval": "pending" }] : []),
+    ],
+  };
+  const records = (await PartyPayment.find(filter)
     .sort({ createdAt: -1 })
     .limit(500)
     .lean()) as PaymentLean[];
@@ -524,7 +573,7 @@ export async function deletePayment(eventId: string, paymentId: string, actor: P
   if (p.kind === "lend") throw badRequest("Remove the money giver instead");
   if (p.source === "contri") throw badRequest("This share comes from the contri split. Remove the person from the participants instead.");
   // Every payment keeps its record: once money was recorded, it can only be voided.
-  if ((p.transactions ?? []).some((t) => !t.voidedAt)) throw conflict("Payments were recorded against this. Void them first.");
+  if (((p.transactions ?? []) as Tx[]).some((t) => !t.voidedAt && approvalOf(t) !== "rejected")) throw conflict("Payments were recorded against this. Void or reject them first.");
   const res = await PartyPayment.deleteOne({ _id: p._id, revision: p.revision ?? 0 });
   if (!res.deletedCount) throw conflict("This payment was changed meanwhile. Reload and try again.");
   await audit({ action: "payment.delete", entityType: "PartyPayment", entityId: paymentId, actorId: actor.id, previousValue: p });
@@ -532,38 +581,52 @@ export async function deletePayment(eventId: string, paymentId: string, actor: P
 
 /* ------------------------------ mark as paid ------------------------------ */
 
-/**
- * Records money received against an obligation (full or partial). Applied in one atomic update
- * guarded by the record's revision and the idempotency key, so a double click, a retry or two
- * people marking at once can never count the same money twice or overpay.
- */
-export async function recordPayment(eventId: string, paymentId: string, input: z.infer<typeof PaymentRecordSchema>, actor: PaymentActor) {
-  await connectDB();
+const txId = () => new Types.ObjectId();
+
+async function loadForMoney(eventId: string, paymentId: string, actor: PaymentActor) {
   const event = await loadEvent(eventId);
   const roles = await rolesOf(event._id);
   const access = accessFor(event, roles, actor);
   const before = await loadPayment(event, paymentId);
-  if (!canRecord(access, before)) throw forbidden("Only the payer, the person receiving it, the party giver or a manager can record this payment");
-  const selfReported = isPayer(access, before) && !isReceiver(access, before);
+  return { event, roles, access, before };
+}
+
+const findTx = (p: PaymentLean, id: string) => ((p.transactions ?? []) as Tx[]).find((t) => String(t._id) === id);
+
+/**
+ * Records money against an obligation (full or partial).
+ * - Whoever received it (or an admin) confirms it: it counts right away.
+ * - The payer can only report it ("I've paid"): it waits for approval and counts once approved;
+ *   the receiver and the admins are emailed.
+ * Applied atomically, guarded by the record's revision and the idempotency key, so a double click,
+ * a retry or two people at once never count the same money twice or overpay.
+ */
+export async function recordPayment(eventId: string, paymentId: string, input: z.infer<typeof PaymentRecordSchema>, actor: PaymentActor) {
+  await connectDB();
+  const { event, access, before } = await loadForMoney(eventId, paymentId, actor);
+  const confirm = canConfirm(access, before);
+  if (!confirm && !canRequest(access, before)) throw forbidden("Only the person who received this money or an admin can confirm it; the payer can ask them to approve it");
 
   const existing = (before.transactions ?? []).find((t) => t.idempotencyKey === input.idempotencyKey);
   if (existing) return { payment: before, duplicate: true };
 
   const due = remainingPaise(before.amountPaise, before.paidPaise);
   if (due <= 0) throw conflict("This is already fully paid");
-  const amountPaise = input.amount !== undefined ? toPaise(input.amount) : due;
-  if (amountPaise > due) throw badRequest(`Only ₹${fromPaise(due)} is still due. Record at most that.`);
+  // A request can't go beyond what isn't already waiting for approval.
+  const room = confirm ? due : due - pendingPaise(before);
+  if (room <= 0) throw conflict("Your payment is already waiting for approval");
+  const amountPaise = input.amount !== undefined ? toPaise(input.amount) : room;
+  if (amountPaise > room) throw badRequest(confirm ? `Only ₹${fromPaise(due)} is still due. Record at most that.` : `Only ₹${fromPaise(room)} can be reported: the rest is already waiting for approval.`);
 
   const paidAt = input.paidOn ? atLocalHour(input.paidOn, 12) : new Date();
   if (input.paidOn && input.paidOn > dayKey(new Date())) throw badRequest("The payment date can't be in the future");
   if (input.reference) {
-    const dup = await PartyPayment.exists({ eventId: event._id, transactions: { $elemMatch: { reference: input.reference, voidedAt: null } } });
+    const dup = await PartyPayment.exists({ eventId: event._id, transactions: { $elemMatch: { reference: input.reference, voidedAt: null, approval: { $ne: "rejected" } } } });
     if (dup) throw conflict(`Transaction reference ${input.reference} is already recorded on this party`);
   }
 
-  const paidPaise = before.paidPaise + amountPaise;
   const tx = {
-    _id: new Types.ObjectId(),
+    _id: txId(),
     amountPaise,
     method: input.method,
     reference: input.reference,
@@ -573,8 +636,10 @@ export async function recordPayment(eventId: string, paymentId: string, input: z
     recordedByEmail: actor.email,
     recordedByName: actor.name,
     idempotencyKey: input.idempotencyKey,
-    selfReported,
+    selfReported: !confirm,
+    approval: confirm ? "confirmed" : "pending",
   };
+  const paidPaise = confirm ? before.paidPaise + amountPaise : before.paidPaise;
   const after = await PartyPayment.findOneAndUpdate(
     { _id: before._id, revision: before.revision ?? 0, paidPaise: before.paidPaise, "transactions.idempotencyKey": { $ne: input.idempotencyKey } },
     { $push: { transactions: tx }, $set: { paidPaise, status: storedStatus(before.amountPaise, paidPaise) }, $inc: { revision: 1 } },
@@ -586,26 +651,75 @@ export async function recordPayment(eventId: string, paymentId: string, input: z
     if (now?.transactions?.some((t) => t.idempotencyKey === input.idempotencyKey)) return { payment: now, duplicate: true };
     throw conflict("This payment was changed meanwhile. Reload and try again.");
   }
+  if (!confirm) {
+    await enqueueJob({
+      jobType: "payment_approval_request",
+      idempotencyKey: `payment_approval_request:${String(tx._id)}`,
+      scheduledAt: new Date(),
+      eventId: event._id,
+      payload: { paymentId: String(before._id), txId: String(tx._id) },
+    });
+  }
   await audit({
-    action: "payment.record",
+    action: confirm ? "payment.record" : "payment.request_approval",
     entityType: "PartyPayment",
     entityId: paymentId,
     actorId: actor.id,
     previousValue: { paidPaise: before.paidPaise, status: before.status },
     newValue: { transaction: tx, paidPaise: after.paidPaise, status: after.status },
   });
-  return { payment: after, duplicate: false };
+  return { payment: after, duplicate: false, awaitingApproval: !confirm };
 }
 
-/** Undoes a payment recorded by mistake. The transaction stays in the history, marked voided. */
-export async function voidTransaction(eventId: string, paymentId: string, txId: string, input: z.infer<typeof VoidTransactionSchema>, actor: PaymentActor) {
+/**
+ * Approve or reject a payment the payer reported (receiver or admin, never the payer), or
+ * withdraw it (the payer). Approving counts it, but never beyond what's still due.
+ */
+export async function reviewPayment(eventId: string, paymentId: string, transactionId: string, input: z.infer<typeof PaymentReviewSchema>, actor: PaymentActor) {
   await connectDB();
-  const event = await loadManaged(eventId, actor);
-  const before = await loadPayment(event, paymentId);
-  const tId = assertObjectId(txId, "transaction id");
-  const tx = (before.transactions ?? []).find((t) => String((t as { _id?: Types.ObjectId })._id) === String(tId));
+  const { access, before } = await loadForMoney(eventId, paymentId, actor);
+  const tx = findTx(before, String(assertObjectId(transactionId, "transaction id")));
+  if (!tx) throw notFound("Transaction not found");
+  if (approvalOf(tx) !== "pending") throw conflict(`This payment was already ${approvalOf(tx) === "confirmed" ? "approved" : "rejected"}`);
+  if (input.decision === "withdraw" ? !isPayer(access, before) : !canConfirm(access, before)) {
+    throw forbidden(input.decision === "withdraw" ? "Only the payer can withdraw their request" : "Only the person who received this money or an admin can approve it");
+  }
+
+  const approve = input.decision === "approve";
+  const due = remainingPaise(before.amountPaise, before.paidPaise);
+  if (approve && tx.amountPaise > due) throw conflict(`Only ₹${fromPaise(due)} is still due now. Reject this one and ask for a new request.`);
+  const paidPaise = approve ? before.paidPaise + tx.amountPaise : before.paidPaise;
+  const after = await PartyPayment.findOneAndUpdate(
+    { _id: before._id, revision: before.revision ?? 0 },
+    {
+      $set: {
+        "transactions.$[t].approval": approve ? "confirmed" : "rejected",
+        "transactions.$[t].reviewedAt": new Date(),
+        "transactions.$[t].reviewedByEmail": actor.email,
+        "transactions.$[t].reviewedByName": actor.name,
+        "transactions.$[t].reviewNote": input.decision === "withdraw" ? input.note || "Withdrawn by the payer" : input.note,
+        paidPaise,
+        status: storedStatus(before.amountPaise, paidPaise),
+      },
+      $inc: { revision: 1 },
+    },
+    { arrayFilters: [{ "t._id": tx._id, "t.approval": "pending" }], returnDocument: "after", runValidators: true }
+  ).lean();
+  if (!after) throw conflict("This payment was changed meanwhile. Reload and try again.");
+  await audit({ action: `payment.${input.decision}`, entityType: "PartyPayment", entityId: paymentId, actorId: actor.id, previousValue: { paidPaise: before.paidPaise, transaction: tx }, newValue: { paidPaise }, reason: input.note });
+  return after;
+}
+
+/** Undoes a confirmed payment recorded by mistake. The transaction stays in the history, marked voided. */
+export async function voidTransaction(eventId: string, paymentId: string, transactionId: string, input: z.infer<typeof VoidTransactionSchema>, actor: PaymentActor) {
+  await connectDB();
+  const { access, before } = await loadForMoney(eventId, paymentId, actor);
+  if (!canConfirm(access, before)) throw forbidden("Only the person who received this money or an admin can void a payment");
+  const tId = assertObjectId(transactionId, "transaction id");
+  const tx = findTx(before, String(tId));
   if (!tx) throw notFound("Transaction not found");
   if (tx.voidedAt) throw conflict("This payment was already voided");
+  if (approvalOf(tx) !== "confirmed") throw badRequest("Only approved payments can be voided. Reject a pending one instead.");
   const paidPaise = Math.max(0, before.paidPaise - tx.amountPaise);
   const after = await PartyPayment.findOneAndUpdate(
     { _id: before._id, revision: before.revision ?? 0 },
@@ -624,6 +738,81 @@ export async function voidTransaction(eventId: string, paymentId: string, txId: 
   if (!after) throw conflict("This payment was changed meanwhile. Reload and try again.");
   await audit({ action: "payment.void", entityType: "PartyPayment", entityId: paymentId, actorId: actor.id, previousValue: { paidPaise: before.paidPaise, transaction: tx }, newValue: { paidPaise }, reason: input.reason });
   return after;
+}
+
+/**
+ * "Change status" (receiver or admin, never the payer). Every change stays in the history:
+ * - paid:           an adjustment for whatever is still due;
+ * - pending:        every approved payment is voided;
+ * - partially_paid: the paid total becomes `paidAmount` (adjustment up, or void + adjustment down).
+ * Requests still waiting for approval are closed, since the status now says what was paid.
+ */
+export async function setPaymentStatus(eventId: string, paymentId: string, input: z.infer<typeof PaymentStatusSchema>, actor: PaymentActor) {
+  await connectDB();
+  const { access, before } = await loadForMoney(eventId, paymentId, actor);
+  if (!canConfirm(access, before)) throw forbidden("Only the person who received this money or an admin can change its status");
+
+  const total = before.amountPaise;
+  const target = input.status === "paid" ? total : input.status === "pending" ? 0 : toPaise(input.paidAmount!);
+  if (input.status === "partially_paid" && (target <= 0 || target >= total)) throw badRequest(`A partial payment is more than ₹0 and less than ₹${fromPaise(total)}`);
+  if (target === before.paidPaise && storedStatus(total, target) === before.status && pendingPaise(before) === 0) throw conflict(`It's already ${input.status.replace("_", " ")}`);
+
+  const now = new Date();
+  const who = { reviewedAt: now, reviewedByEmail: actor.email, reviewedByName: actor.name };
+  let txs = ((before.transactions ?? []) as Tx[]).map((t) => {
+    const plain = { ...(t as unknown as Record<string, unknown>) };
+    if (approvalOf(t) === "pending") Object.assign(plain, { approval: "rejected", ...who, reviewNote: `Closed: status changed to ${input.status.replace("_", " ")}` });
+    return plain;
+  });
+  let paid = before.paidPaise;
+  if (target < paid) {
+    // Going down: void every approved payment, then put back the new total as one adjustment.
+    txs = txs.map((t) => (!t.voidedAt && (t.approval ?? "confirmed") === "confirmed" ? { ...t, voidedAt: now, voidedByEmail: actor.email, voidReason: `Status changed: ${input.reason}` } : t));
+    paid = 0;
+  }
+  if (target > paid) {
+    txs.push({
+      _id: txId(),
+      amountPaise: target - paid,
+      method: "other",
+      reference: "",
+      note: `Status changed to ${input.status.replace("_", " ")}: ${input.reason}`,
+      paidAt: now,
+      recordedById: Types.ObjectId.isValid(actor.id) ? actor.id : null,
+      recordedByEmail: actor.email,
+      recordedByName: actor.name,
+      idempotencyKey: `status-${String(txId())}`,
+      selfReported: false,
+      approval: "confirmed",
+      adjustment: true,
+      createdAt: now,
+    });
+  }
+  const after = await PartyPayment.findOneAndUpdate(
+    { _id: before._id, revision: before.revision ?? 0 },
+    { $set: { transactions: txs, paidPaise: target, status: storedStatus(total, target) }, $inc: { revision: 1 } },
+    { returnDocument: "after", runValidators: true }
+  ).lean();
+  if (!after) throw conflict("This payment was changed meanwhile. Reload and try again.");
+  await audit({ action: "payment.status_change", entityType: "PartyPayment", entityId: paymentId, actorId: actor.id, previousValue: { paidPaise: before.paidPaise, status: before.status }, newValue: { paidPaise: target, status: after.status }, reason: input.reason });
+  return after;
+}
+
+/** For the approval email: the request, who should approve it, and the party. */
+export async function getApprovalRequest(paymentId: string, transactionId: string) {
+  await connectDB();
+  const p = (await PartyPayment.findById(paymentId).lean()) as PaymentLean | null;
+  if (!p) return null;
+  const tx = findTx(p, transactionId);
+  if (!tx || approvalOf(tx) !== "pending") return null;
+  const event = (await PartyEvent.findById(p.eventId).lean()) as EventLean | null;
+  if (!event) return null;
+  const roles = await rolesOf(event._id);
+  const payee = payeeOf(await buildCtx(event, roles), p);
+  const receiverEmail = p.payeeRoleId ? (roles.find((r) => String(r._id) === String(p.payeeRoleId))?.email ?? null) : (event.organizerEmail ?? null);
+  const admins = await User.find({ role: { $in: ["admin", "super_admin"] }, isActive: true }).select({ email: 1 }).lean();
+  const to = [...new Set([receiverEmail, ...admins.map((a) => a.email)].filter((e): e is string => !!e).map(lower))].filter((e) => e !== lower(p.payerEmail));
+  return { to, payerName: p.payerName, payeeName: payee.name, amount: fromPaise(tx.amountPaise), method: tx.method as PaymentMethod, reference: tx.reference ?? "", kind: p.kind as PaymentKind, event };
 }
 
 /* ------------------------------ party lifecycle ------------------------------ */

@@ -13,7 +13,7 @@ async function superAdmin() {
   return { id: await makeAdmin(), role: "super_admin" as const };
 }
 async function adminActor(sup: { id: string; role: "super_admin" }) {
-  const a = await createUser(create({ email: "admin@team.test", name: "Ada Admin", role: "admin", password: "admin-pass-123" }), sup);
+  const a = await createUser(create({ email: "admin@team.test", name: "Ada Admin", role: "admin", password: "Admin-pass-123" }), sup);
   return { id: String(a._id), role: "admin" as const };
 }
 
@@ -45,7 +45,7 @@ describe("users: one collection for everyone", () => {
     await createUser(create({ email: "m@team.test", name: "M" }), sup);
     await expect(login({ email: "m@team.test", password: "anything-at-all", ip: "3.3.3.1" })).rejects.toMatchObject({ status: 401 });
     await adminActor(sup);
-    const { token } = await login({ email: "admin@team.test", password: "admin-pass-123", ip: "3.3.3.2" });
+    const { token } = await login({ email: "admin@team.test", password: "Admin-pass-123", ip: "3.3.3.2" });
     expect((await validateSessionToken(token))?.role).toBe("admin");
     expect((await User.findOne({ email: "admin@team.test" }).lean())?.lastLoginAt).toBeTruthy();
   });
@@ -74,19 +74,19 @@ describe("users: protection rules", () => {
   it("only the Super Admin manages admins; admins manage members", async () => {
     const sup = await superAdmin();
     const admin = await adminActor(sup);
-    await expect(createUser(create({ email: "b@team.test", name: "B", role: "admin", password: "admin-pass-123" }), admin)).rejects.toMatchObject({ status: 403 });
-    const other = await createUser(create({ email: "c@team.test", name: "C", role: "admin", password: "admin-pass-123" }), sup);
+    await expect(createUser(create({ email: "b@team.test", name: "B", role: "admin", password: "Admin-pass-123" }), admin)).rejects.toMatchObject({ status: 403 });
+    const other = await createUser(create({ email: "c@team.test", name: "C", role: "admin", password: "Admin-pass-123" }), sup);
     await expect(updateUser(String(other._id), upd({ name: "X" }), admin)).rejects.toMatchObject({ status: 403 });
     const member = await createUser(create({ email: "d@team.test", name: "D" }), admin);
     await expect(updateUser(String(member._id), upd({ name: "Dee" }), admin)).resolves.toMatchObject({ name: "Dee" });
-    await expect(updateUser(String(member._id), upd({ role: "admin", password: "admin-pass-123" }), admin)).rejects.toMatchObject({ status: 403 });
+    await expect(updateUser(String(member._id), upd({ role: "admin", password: "Admin-pass-123" }), admin)).rejects.toMatchObject({ status: 403 });
     await expect(deleteUser(String(member._id), admin)).resolves.toBeUndefined();
   });
 
   it("demoting or deactivating an admin signs them out; as a member they can still sign in", async () => {
     const sup = await superAdmin();
     const admin = await adminActor(sup);
-    const { token } = await login({ email: "admin@team.test", password: "admin-pass-123", ip: "3.3.3.3" });
+    const { token } = await login({ email: "admin@team.test", password: "Admin-pass-123", ip: "3.3.3.3" });
     await updateUser(admin.id, upd({ isActive: false }), sup);
     expect(await validateSessionToken(token)).toBeNull();
     await updateUser(admin.id, upd({ isActive: true, role: "member" }), sup);
@@ -94,8 +94,8 @@ describe("users: protection rules", () => {
     expect((await User.findById(admin.id).select("+passwordHash").lean())?.passwordHash).toBeTruthy();
     // Promoting again doesn't need a password; the Super Admin can still set a one-time one.
     await expect(updateUser(admin.id, upd({ role: "admin" }), sup)).resolves.toMatchObject({ role: "admin" });
-    await updateUser(admin.id, upd({ password: "brand-new-pass-1" }), sup);
-    await expect(login({ email: "admin@team.test", password: "brand-new-pass-1", ip: "3.3.3.4" })).resolves.toBeTruthy();
+    await updateUser(admin.id, upd({ password: "Brand-new-pass-1" }), sup);
+    await expect(login({ email: "admin@team.test", password: "Brand-new-pass-1", ip: "3.3.3.4" })).resolves.toBeTruthy();
   });
 
   it("changing your own password checks the current one and signs out other sessions", async () => {
@@ -104,9 +104,9 @@ describe("users: protection rules", () => {
     const b = await login({ email: "boss@party.test", password: "super-secret-pass", ip: "3.3.3.6" });
     const current = await validateSessionToken(a.token);
     await expect(
-      changeOwnPassword({ ...sup, sessionId: current!.sessionId }, ChangePasswordSchema.parse({ currentPassword: "wrong-password", newPassword: "next-pass-12345" }))
+      changeOwnPassword({ ...sup, sessionId: current!.sessionId }, ChangePasswordSchema.parse({ currentPassword: "wrong-password", newPassword: "Next-pass-12345" }))
     ).rejects.toMatchObject({ status: 400 });
-    await changeOwnPassword({ ...sup, sessionId: current!.sessionId }, ChangePasswordSchema.parse({ currentPassword: "super-secret-pass", newPassword: "next-pass-12345" }));
+    await changeOwnPassword({ ...sup, sessionId: current!.sessionId }, ChangePasswordSchema.parse({ currentPassword: "super-secret-pass", newPassword: "Next-pass-12345" }));
     expect(await validateSessionToken(a.token)).not.toBeNull(); // this device stays signed in
     expect(await validateSessionToken(b.token)).toBeNull();
     expect(await Session.countDocuments()).toBe(1);
@@ -169,13 +169,13 @@ describe("welcome email", () => {
     await createUser(create({ email: "off@team.test", name: "Off", isActive: false }), sup);
     expect(await ScheduledJob.countDocuments({ jobType: "user_welcome" })).toBe(0);
 
-    await createUser(create({ email: "officer@team.test", name: "Officer", role: "admin", password: "secret-admin-pass" }), sup);
+    await createUser(create({ email: "officer@team.test", name: "Officer", role: "admin", password: "Secret-admin-pass1" }), sup);
     const job = await claimNextJob("w1", new Date(Date.now() + 1000));
     expect((await processJob(job!, "w1")).outcome).toBe("sent");
     const msg = send.mock.calls[0][0];
     expect(msg.html).toContain("/admin/login");
-    expect(msg.html).not.toContain("secret-admin-pass");
-    expect(msg.text).not.toContain("secret-admin-pass");
+    expect(msg.html).not.toContain("Secret-admin-pass1");
+    expect(msg.text).not.toContain("Secret-admin-pass1");
     send.mockRestore();
   });
 });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { AuditLog, PartyMoneyRole, PartyPayment, User } from "@/models";
 import { fromPaise, remainingPaise, storedStatus, toPaise, viewStatus } from "@/lib/payments";
-import { CreateEventSchema, MoneyRoleCreateSchema, PaymentCreateSchema, PaymentRecordSchema, PaymentUpdateSchema, UpdateEventSchema } from "@/lib/validation";
+import { CreateEventSchema, MoneyRoleCreateSchema, PaymentCreateSchema, PaymentRecordSchema, PaymentReviewSchema, PaymentStatusSchema, PaymentUpdateSchema, UpdateEventSchema } from "@/lib/validation";
+import { ScheduledJob } from "@/models";
 import { createEvent, deleteEvent, updateEvent } from "@/services/event.service";
 import { contriThankYouEmail } from "@/lib/email-templates";
 import {
@@ -10,6 +11,8 @@ import {
   deleteMoneyRole,
   deletePayment,
   getContriPaymentState,
+  reviewPayment,
+  setPaymentStatus,
   getPartyPayments,
   getPaymentUpiLink,
   listMyPayments,
@@ -40,6 +43,12 @@ async function setup(over: Record<string, unknown> = {}) {
     bossId
   );
   return { boss, host, priya, ravi, eventId: String(event._id) };
+}
+
+/** The id of the payment's request that is waiting for approval. */
+async function pendingTx(eventId: string, paymentId: string, viewer: PaymentActor) {
+  const p = (await getPartyPayments(eventId, viewer)).payments.find((x) => x._id === paymentId)!;
+  return p.transactions.find((t) => t.approval === "pending")!._id;
 }
 
 const share = (payerName: string, payerEmail: string | null, amount: number, extra: Record<string, unknown> = {}) =>
@@ -148,9 +157,11 @@ describe("access control", () => {
     await expect(getPaymentUpiLink(eventId, String(p!._id), ravi)).rejects.toMatchObject({ status: 404 });
     // Anyone else can't record Priya's payment...
     await expect(recordPayment(eventId, String(p!._id), pay(1000), ravi)).rejects.toMatchObject({ status: 403 });
-    // ...but Priya can say she paid, so the giver doesn't have to mark everyone. It's flagged as self-reported.
+    // ...Priya can say she paid, but it only counts once the giver (who received it) approves.
     await recordPayment(eventId, String(p!._id), pay(1000), priya);
-    expect((await getPartyPayments(eventId, host)).payments.find((x) => x.payerName === "Priya")).toMatchObject({ status: "paid", upiLink: null, transactions: [{ selfReported: true }] });
+    expect((await getPartyPayments(eventId, host)).payments.find((x) => x.payerName === "Priya")).toMatchObject({ status: "pending", paid: 0, awaitingApproval: 1000, requestable: 0, upiLink: null, transactions: [{ selfReported: true, approval: "pending" }] });
+    await reviewPayment(eventId, String(p!._id), await pendingTx(eventId, String(p!._id), host), PaymentReviewSchema.parse({ decision: "approve" }), host);
+    expect((await getPartyPayments(eventId, host)).payments.find((x) => x.payerName === "Priya")).toMatchObject({ status: "paid", paid: 1000, transactions: [{ approval: "confirmed" }] });
     await expect(createPayment(eventId, share("Me", "x@team.test", 1), stranger)).rejects.toMatchObject({ status: 403 });
     await expect(updatePayment(eventId, String(p!._id), PaymentUpdateSchema.parse({ amount: 1 }), priya)).rejects.toMatchObject({ status: 403 });
   });
@@ -266,9 +277,16 @@ describe("contri parties", () => {
     expect(st).toMatchObject({ shares: 2, paidShares: 0, allPaid: false, mine: { payerName: "Priya", due: 50, canRecord: true } });
     expect(st!.mine!.upiLink).toContain("am=50.00");
 
-    await recordPayment(eventId, st!.mine!._id, pay(20), priya); // partial, self-marked
-    expect((await getContriPaymentState(eventId, priya))!.mine).toMatchObject({ due: 30, upiLink: expect.stringContaining("am=30.00") });
-    await recordPayment(eventId, st!.mine!._id, pay(), priya);
+    const id = st!.mine!._id;
+    const approve = async () => reviewPayment(eventId, id, await pendingTx(eventId, id, host), PaymentReviewSchema.parse({ decision: "approve" }), host);
+    await recordPayment(eventId, id, pay(20), priya); // partial, reported by Priya: waits for the host
+    // Not counted yet, but the QR is only for what she hasn't reported.
+    expect((await getContriPaymentState(eventId, priya))!.mine).toMatchObject({ due: 50, awaitingApproval: 20, requestable: 30, upiLink: expect.stringContaining("am=30.00") });
+    await approve();
+    expect((await getContriPaymentState(eventId, priya))!.mine).toMatchObject({ due: 30, awaitingApproval: 0, upiLink: expect.stringContaining("am=30.00") });
+    await recordPayment(eventId, id, pay(), priya);
+    expect((await getContriPaymentState(eventId, priya))!.mine).toMatchObject({ due: 30, requestable: 0, upiLink: null });
+    await approve();
     st = await getContriPaymentState(eventId, priya);
     expect(st).toMatchObject({ paidShares: 1, allPaid: false, mine: { due: 0, upiLink: null } });
 
@@ -284,5 +302,81 @@ describe("contri parties", () => {
     expect(settled.attachments).toBeUndefined();
     expect(settled.html).not.toContain("upi://");
     expect(settled.html).toContain("All settled");
+  });
+});
+
+describe("payment approvals & status changes", () => {
+  it("the party giver repaying a money giver can only ask for approval; the money giver or an admin approves", async () => {
+    const { boss, host, ravi, priya, eventId } = await setup({ paymentModel: "lender_provider" });
+    const b = await createMoneyRole(eventId, MoneyRoleCreateSchema.parse({ role: "lender", name: "Ravi", email: "ravi@team.test", lentAmount: 3000 }), host);
+    const lend = (await PartyPayment.findOne({ eventId, kind: "lend" }).lean())!;
+    const id = String(lend._id);
+    expect(String(lend.payeeRoleId)).toBe(String(b._id));
+
+    // A (the party giver, who manages the party) can't just mark the repayment paid: it's a request.
+    const res = await recordPayment(eventId, id, pay(1000, { reference: "UPI-A1" }), host);
+    expect(res).toMatchObject({ awaitingApproval: true, payment: { paidPaise: 0, status: "pending" } });
+    const view = (await getPartyPayments(eventId, host)).payments.find((x) => x._id === id)!;
+    expect(view).toMatchObject({ canConfirm: false, canRequest: true, awaitingApproval: 1000, requestable: 2000 });
+    // B and the admins are asked; A isn't.
+    const job = (await ScheduledJob.findOne({ jobType: "payment_approval_request" }).lean())!;
+    const { getApprovalRequest } = await import("@/services/payment.service");
+    const req = (await getApprovalRequest(String(job.payload.paymentId), String(job.payload.txId)))!;
+    expect(req.to.sort()).toEqual(["boss@party.test", "ravi@team.test"]);
+    expect(req).toMatchObject({ payerName: "Host", payeeName: "Ravi", amount: 1000 });
+
+    const tx = await pendingTx(eventId, id, ravi);
+    // A can't approve their own payment, nor can a bystander or a manager-less member.
+    await expect(reviewPayment(eventId, id, tx, PaymentReviewSchema.parse({ decision: "approve" }), host)).rejects.toMatchObject({ status: 403 });
+    await expect(reviewPayment(eventId, id, tx, PaymentReviewSchema.parse({ decision: "approve" }), priya)).rejects.toMatchObject({ status: 403 });
+    // Can't report more than what isn't already waiting.
+    await expect(recordPayment(eventId, id, pay(2500), host)).rejects.toMatchObject({ status: 400 });
+
+    await reviewPayment(eventId, id, tx, PaymentReviewSchema.parse({ decision: "approve" }), ravi);
+    expect((await PartyPayment.findById(id).lean())).toMatchObject({ paidPaise: 100000, status: "partially_paid" });
+    await expect(reviewPayment(eventId, id, tx, PaymentReviewSchema.parse({ decision: "approve" }), ravi)).rejects.toMatchObject({ status: 409 });
+
+    // Another request: rejected by an admin (needs a reason), one more withdrawn by A.
+    await recordPayment(eventId, id, pay(500), host);
+    const tx2 = await pendingTx(eventId, id, host);
+    expect(() => PaymentReviewSchema.parse({ decision: "reject" })).toThrow();
+    await reviewPayment(eventId, id, tx2, PaymentReviewSchema.parse({ decision: "reject", note: "Nothing arrived" }), boss);
+    await recordPayment(eventId, id, pay(500), host);
+    await reviewPayment(eventId, id, await pendingTx(eventId, id, host), PaymentReviewSchema.parse({ decision: "withdraw" }), host);
+    const after = (await getPartyPayments(eventId, ravi)).payments.find((x) => x._id === id)!;
+    expect(after).toMatchObject({ paid: 1000, due: 2000, awaitingApproval: 0 });
+    expect(after.transactions.map((t) => t.approval)).toEqual(["confirmed", "rejected", "rejected"]);
+
+    // The receiver confirms directly when the money arrives (no request needed).
+    await recordPayment(eventId, id, pay(500), ravi);
+    expect((await PartyPayment.findById(id).lean())!.paidPaise).toBe(150000);
+  });
+
+  it("change status: receiver or admin, never the payer; every change stays in the history", async () => {
+    const { boss, host, priya, ravi, eventId } = await setup();
+    const p = (await createPayment(eventId, share("Priya", "priya@team.test", 1000), host))!;
+    const id = String(p._id);
+    const status = (s: Record<string, unknown>) => PaymentStatusSchema.parse({ reason: "Paid in cash at the party", ...s });
+
+    await expect(setPaymentStatus(eventId, id, status({ status: "paid" }), priya)).rejects.toMatchObject({ status: 403 });
+    await expect(setPaymentStatus(eventId, id, status({ status: "paid" }), ravi)).rejects.toMatchObject({ status: 403 });
+    expect(() => PaymentStatusSchema.parse({ status: "partially_paid", reason: "x" })).toThrow();
+
+    // A pending request is closed by the status change.
+    await recordPayment(eventId, id, pay(200), priya);
+    await setPaymentStatus(eventId, id, status({ status: "partially_paid", paidAmount: 400 }), host);
+    let v = (await getPartyPayments(eventId, host)).payments[0];
+    expect(v).toMatchObject({ paid: 400, due: 600, status: "partially_paid", awaitingApproval: 0 });
+    expect(v.transactions.map((t) => [t.approval, t.adjustment])).toEqual([["rejected", false], ["confirmed", true]]);
+
+    await setPaymentStatus(eventId, id, status({ status: "paid" }), boss);
+    expect((await getPartyPayments(eventId, host)).payments[0]).toMatchObject({ paid: 1000, due: 0, status: "paid", upiLink: null });
+
+    await setPaymentStatus(eventId, id, status({ status: "pending", reason: "Recorded by mistake" }), host);
+    v = (await getPartyPayments(eventId, host)).payments[0];
+    expect(v).toMatchObject({ paid: 0, due: 1000, status: "pending" });
+    expect(v.transactions.filter((t) => t.approval === "confirmed").every((t) => t.voided)).toBe(true);
+    await expect(setPaymentStatus(eventId, id, status({ status: "pending" }), host)).rejects.toMatchObject({ status: 409 });
+    await expect(setPaymentStatus(eventId, id, status({ status: "partially_paid", paidAmount: 1000 }), host)).rejects.toMatchObject({ status: 400 });
   });
 });

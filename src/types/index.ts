@@ -32,6 +32,10 @@ export const NOTIFICATION_TYPES = [
   "user_credentials",
   "user_role_upgrade",
   "event_scheduled",
+  "password_reset",
+  "occasion_wish",
+  "occasion_reminder",
+  "payment_approval_request",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -71,7 +75,14 @@ export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
   user_credentials: "Login credentials (username + one-time password)",
   user_role_upgrade: "Role upgrade notice to the user",
   event_scheduled: "New party announcement to participants",
+  password_reset: "Password reset link (forgot password)",
+  occasion_wish: "Wishes to a user on their special day (birthday, anniversary…)",
+  occasion_reminder: "Reminder to the team to wish someone on their special day",
+  payment_approval_request: "Payment approval requests (to whoever received the money, and admins)",
 };
+
+/** Security emails: always sent, whatever the notification settings say. */
+export const ALWAYS_SENT_NOTIFICATIONS: readonly NotificationType[] = ["password_reset"];
 
 export const USER_ROLES = ["super_admin", "admin", "manager", "member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];

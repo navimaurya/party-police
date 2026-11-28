@@ -67,7 +67,7 @@ describe("users list", () => {
   it("defaults to Super Admin, admins, members; sorts by name either way", async () => {
     const sup = { id: await makeAdmin(), role: "super_admin" as const };
     await createUser(UserCreateSchema.parse({ email: "zed@t.test", name: "zed" }), sup);
-    await createUser(UserCreateSchema.parse({ email: "amy@t.test", name: "Amy", role: "admin", password: "admin-pass-123" }), sup);
+    await createUser(UserCreateSchema.parse({ email: "amy@t.test", name: "Amy", role: "admin", password: "Admin-pass-123" }), sup);
     const names = async (sort?: string) => (await listUsers(UserListQuerySchema.parse({ sort }))).items.map((u) => u.name);
     expect(await names()).toEqual(["Boss", "Amy", "zed"]);
     expect(await names("-role")).toEqual(["zed", "Amy", "Boss"]);

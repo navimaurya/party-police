@@ -15,8 +15,10 @@ export async function ContriPaymentCard({ split, hostName, manageHint, state }: 
   const mine = state?.mine ?? null;
   const settled = !!state?.allPaid;
   const iPaid = !!mine && mine.due === 0;
-  const owe = mine && mine.due > 0 ? mine.due : split.perHead;
-  const link = settled || iPaid ? null : mine && mine.due > 0 ? mine.upiLink : split.upiLink;
+  // Reported everything, waiting for the host (or an admin) to approve: nothing left to scan.
+  const waiting = !!mine && !iPaid && mine.requestable === 0 && mine.awaitingApproval > 0;
+  const owe = mine && mine.due > 0 ? mine.requestable : split.perHead;
+  const link = settled || iPaid || waiting ? null : mine && mine.due > 0 ? mine.upiLink : split.upiLink;
   const svg = link ? await upiQrSvg(link) : null;
   const progress = state ? `${state.paidShares} of ${state.shares} ${state.shares === 1 ? "person has" : "people have"} paid.` : null;
 
@@ -41,6 +43,11 @@ export async function ContriPaymentCard({ split, hostName, manageHint, state }: 
               <p className="flex items-center gap-2 font-heading text-2xl font-bold leading-none text-emerald-700"><CheckCircle2 className="size-6" /> All settled</p>
               <p className="text-muted-foreground">Everyone has paid {hostName} back their {formatRupees(split.perHead)}. Nothing left to scan. 🎉</p>
             </>
+          ) : waiting ? (
+            <>
+              <p className="font-heading text-2xl font-bold leading-none text-amber-700">⏳ Waiting for approval</p>
+              <p className="text-muted-foreground">You reported paying {formatRupees(mine!.awaitingApproval)}. It counts once {hostName} or an admin approves it. {progress}</p>
+            </>
           ) : iPaid ? (
             <>
               <p className="flex items-center gap-2 font-heading text-2xl font-bold leading-none text-emerald-700"><CheckCircle2 className="size-6" /> You&apos;ve paid</p>
@@ -52,6 +59,7 @@ export async function ContriPaymentCard({ split, hostName, manageHint, state }: 
               <p className="font-heading text-4xl font-bold leading-none">{formatRupees(owe)}</p>
               <p className="text-muted-foreground">
                 {mine && mine.paid > 0 ? <>You&apos;ve paid {formatRupees(mine.paid)} of {formatRupees(mine.total)}. </> : null}
+                {mine && mine.awaitingApproval > 0 ? <>{formatRupees(mine.awaitingApproval)} is waiting for approval. </> : null}
                 {formatRupees(split.total)} split between {split.headcount} {split.headcount === 1 ? "person" : "people"}. {hostName} paid the bill, so the other {split.payers} pay {hostName} back. {progress}
               </p>
               {split.upiId ? (
@@ -61,7 +69,7 @@ export async function ContriPaymentCard({ split, hostName, manageHint, state }: 
                   {hostName} hasn&apos;t added a UPI ID yet, so there&apos;s no QR code.{manageHint ? " Add it on the party below or on the host's profile." : " Ask them for it, or pay in cash."}
                 </p>
               )}
-              {mine?.canRecord && <div className="flex flex-wrap items-center gap-2 pt-1"><SelfPayButton p={mine} /><span className="text-xs text-muted-foreground">Paid already? Mark it yourself, so {hostName} doesn&apos;t have to.</span></div>}
+              {mine?.canRequest && mine.requestable > 0 && <div className="flex flex-wrap items-center gap-2 pt-1"><SelfPayButton p={mine} /><span className="text-xs text-muted-foreground">Paid already? Tell {hostName}: it counts once they (or an admin) approve it.</span></div>}
             </>
           )}
         </div>
